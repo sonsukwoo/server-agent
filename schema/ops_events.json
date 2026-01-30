@@ -1,0 +1,111 @@
+{
+  "schema_name": "ops_events",
+  "tables": [
+    {
+      "name": "cloudflare_tunnels",
+      "full_name": "ops_events.cloudflare_tunnels",
+      "description": "Cloudflare Tunnel 상태 기록",
+      "columns": [
+        {
+          "name": "id",
+          "type": "integer",
+          "description": ""
+        },
+        {
+          "name": "ts",
+          "type": "timestamp with time zone",
+          "description": ""
+        },
+        {
+          "name": "tunnel_name",
+          "type": "text",
+          "description": ""
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "description": "상태"
+        },
+        {
+          "name": "error_message",
+          "type": "text",
+          "description": "에러 메시지"
+        }
+      ]
+    },
+    {
+      "name": "login_events",
+      "full_name": "ops_events.login_events",
+      "description": "서버 접속/로그인 기록",
+      "columns": [
+        {
+          "name": "id",
+          "type": "integer",
+          "description": ""
+        },
+        {
+          "name": "ts",
+          "type": "timestamp with time zone",
+          "description": "로그인 시각"
+        },
+        {
+          "name": "user_name",
+          "type": "text",
+          "description": "접속 계정명"
+        },
+        {
+          "name": "tty",
+          "type": "text",
+          "description": "터미널 (tty, pts 등)"
+        },
+        {
+          "name": "remote_host",
+          "type": "text",
+          "description": "접속 IP/호스트"
+        },
+        {
+          "name": "session_id",
+          "type": "text",
+          "description": "세션 식별자"
+        }
+      ]
+    },
+    {
+      "name": "system_events",
+      "full_name": "ops_events.system_events",
+      "description": "중요 시스템 이벤트 로그",
+      "columns": [
+        {
+          "name": "id",
+          "type": "integer",
+          "description": ""
+        },
+        {
+          "name": "ts",
+          "type": "timestamp with time zone",
+          "description": ""
+        },
+        {
+          "name": "event_type",
+          "type": "text",
+          "description": "이벤트 타입 (ERROR/WARN/INFO 등)"
+        },
+        {
+          "name": "severity",
+          "type": "text",
+          "description": "심각도"
+        },
+        {
+          "name": "source",
+          "type": "text",
+          "description": "발생 소스"
+        },
+        {
+          "name": "message",
+          "type": "text",
+          "description": "이벤트 메시지"
+        }
+      ]
+    }
+  ]
+}

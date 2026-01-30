@@ -1,0 +1,79 @@
+{
+  "schema_name": "ops_runtime",
+  "tables": [
+    {
+      "name": "tmux_sessions",
+      "full_name": "ops_runtime.tmux_sessions",
+      "description": "서버 내 실행 중인 tmux 세션 정보",
+      "columns": [
+        {
+          "name": "id",
+          "type": "integer",
+          "description": ""
+        },
+        {
+          "name": "ts",
+          "type": "timestamp with time zone",
+          "description": ""
+        },
+        {
+          "name": "session_name",
+          "type": "text",
+          "description": "tmux 세션 이름"
+        },
+        {
+          "name": "attached",
+          "type": "boolean",
+          "description": "현재 세션에 접속 중인지 여부"
+        },
+        {
+          "name": "windows",
+          "type": "integer",
+          "description": "세션 내 윈도우 개수"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "description": "tmux 세션 생성 시각"
+        }
+      ]
+    },
+    {
+      "name": "v_runtime_summary",
+      "full_name": "ops_runtime.v_runtime_summary",
+      "description": "v_runtime_summary 테이블",
+      "columns": [
+        {
+          "name": "id",
+          "type": "integer",
+          "description": ""
+        },
+        {
+          "name": "시각",
+          "type": "timestamp with time zone",
+          "description": ""
+        },
+        {
+          "name": "세션명",
+          "type": "text",
+          "description": ""
+        },
+        {
+          "name": "윈도우수",
+          "type": "integer",
+          "description": ""
+        },
+        {
+          "name": "상태",
+          "type": "text",
+          "description": ""
+        },
+        {
+          "name": "문장 요약",
+          "type": "text",
+          "description": ""
+        }
+      ]
+    }
+  ]
+}
