@@ -21,7 +21,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
 
       # Internal Paths
-      - MCP_SERVERS_DIR=/app/mcp
+      - MCP_SERVERS_DIR=/app/mcp_servers
       - SCHEMA_DIR=/app/schema
     volumes:
       - ./backend:/app

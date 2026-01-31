@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     # Paths
     schema_dir: str = "/app/schema"
-    mcp_servers_dir: str = "/app/mcp"
+    mcp_servers_dir: str = "/app/mcp_servers"
     
     class Config:
         env_file = ".env"

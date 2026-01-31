@@ -10,7 +10,7 @@ server-agent/
 ├── backend/             # Main Application & MCP Servers
 │   ├── src/api/         # FastAPI Server
 │   ├── src/agents/      # LangGraph Agents
-│   ├── mcp/             # MCP Servers (Postgres, Ubuntu)
+│   ├── mcp_servers/     # MCP Servers (Postgres, Ubuntu)
 │   └── schema/          # DB Schema Cache
 ├── frontend/            # Frontend Application (Planned)
 └── docker-compose.yml   # Orchestration
