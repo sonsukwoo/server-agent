@@ -14,38 +14,10 @@ services:
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - MCP_POSTGRES_URL=http://mcp-postgres:8001
-      - MCP_UBUNTU_URL=http://mcp-ubuntu:8002
-    depends_on:
-      - mcp-postgres
-      - mcp-ubuntu
+      - SCHEMA_DIR=/app/schema
     volumes:
       - ./schema:/app/schema
-    networks:
-      - agent-network
-
-  # PostgreSQL MCP 서버
-  mcp-postgres:
-    build: ./mcp-servers/postgres
-    container_name: mcp-postgres
-    ports:
-      - "8001:8001"
-    environment:
-      - DB_HOST=${DB_HOST}
-      - DB_PORT=${DB_PORT}
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-    networks:
-      - agent-network
-
-  # Ubuntu MCP 서버
-  mcp-ubuntu:
-    build: ./mcp-servers/ubuntu
-    container_name: mcp-ubuntu
-    ports:
-      - "8002:8002"
-    privileged: true  # 시스템 명령 실행 권한
+      - ./mcp-servers:/app/mcp-servers
     networks:
       - agent-network
 

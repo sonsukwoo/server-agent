@@ -1,4 +1,4 @@
-"""PostgreSQL MCP 서버 - DB 조회 Tool 제공"""
+"""PostgreSQL MCP 서버 - stdio 버전"""
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -88,23 +88,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text="오류: table_name을 입력해주세요")]
         
         try:
-            # 스키마명과 테이블명 분리
             if "." in table_name:
                 schema_name, tbl_name = table_name.split(".", 1)
             else:
                 return [TextContent(type="text", text="오류: 테이블명은 'schema.table' 형식이어야 합니다")]
             
-            # 해당 스키마의 JSON 파일 찾기
             json_file = SCHEMA_DIR / f"{schema_name}.json"
             
             if not json_file.exists():
                 return [TextContent(type="text", text=f"오류: {schema_name} 스키마를 찾을 수 없습니다")]
             
-            # JSON 파일 읽기
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # 테이블 찾기
             for table in data.get("tables", []):
                 if table["name"] == tbl_name or table["full_name"] == table_name:
                     result = {
@@ -120,9 +116,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=f"오류: {str(e)}")]
     
     elif name == "execute_sql":
-        query = arguments["query"]
+        query = arguments.get("query", "")
         
-        # SELECT만 허용
+        if not query:
+            return [TextContent(type="text", text="오류: query를 입력해주세요")]
+        
         if not query.strip().upper().startswith("SELECT"):
             return [TextContent(type="text", text="오류: SELECT 쿼리만 실행 가능합니다")]
         
@@ -133,7 +131,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             results = cursor.fetchall()
             columns = [desc[0] for desc in cursor.description]
             
-            # 결과를 JSON으로 변환
             result_list = [dict(zip(columns, row)) for row in results]
             
             cursor.close()
@@ -147,7 +144,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text="알 수 없는 Tool입니다")]
 
 async def main():
-    """MCP 서버 실행"""
+    """MCP 서버 실행 (stdio)"""
     async with stdio_server() as (read, write):
         await app.run(read, write, app.create_initialization_options())
 

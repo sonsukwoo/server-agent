@@ -1,4 +1,4 @@
-"""Ubuntu MCP 서버 - 시스템 명령 Tool 제공"""
+"""Ubuntu MCP 서버 - stdio 버전"""
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -47,10 +47,13 @@ async def list_tools() -> list[Tool]:
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Tool 실행"""
+    
     if name == "classify_risk":
-        command = arguments["command"]
+        command = arguments.get("command", "")
         
-        # 위험도 분류
+        if not command:
+            return [TextContent(type="text", text="오류: command를 입력해주세요")]
+        
         for keyword in DANGER_KEYWORDS:
             if keyword in command:
                 return [TextContent(type="text", text="danger")]
@@ -62,7 +65,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text="safe")]
     
     elif name == "execute_command":
-        command = arguments["command"]
+        command = arguments.get("command", "")
+        
+        if not command:
+            return [TextContent(type="text", text="오류: command를 입력해주세요")]
         
         try:
             result = subprocess.run(
@@ -80,28 +86,43 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             }
             
             return [TextContent(type="text", text=json.dumps(output, ensure_ascii=False))]
+        except subprocess.TimeoutExpired:
+            return [TextContent(type="text", text="오류: 명령어 실행 시간 초과 (10초)")]
         except Exception as e:
             return [TextContent(type="text", text=f"오류: {str(e)}")]
     
     elif name == "get_system_status":
-        # 간단한 시스템 상태 조회
         try:
-            cpu = subprocess.run("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'", shell=True, capture_output=True, text=True)
-            mem = subprocess.run("free | grep Mem | awk '{print ($3/$2) * 100.0}'", shell=True, capture_output=True, text=True)
+            cpu_result = subprocess.run(
+                "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'",
+                shell=True, capture_output=True, text=True
+            )
+            
+            mem_result = subprocess.run(
+                "free | grep Mem | awk '{print ($3/$2) * 100.0}'",
+                shell=True, capture_output=True, text=True
+            )
+            
+            disk_result = subprocess.run(
+                "df -h / | tail -1 | awk '{print $5}'",
+                shell=True, capture_output=True, text=True
+            )
             
             status = {
-                "cpu": cpu.stdout.strip(),
-                "memory": mem.stdout.strip()
+                "cpu_percent": cpu_result.stdout.strip() or "N/A",
+                "memory_percent": mem_result.stdout.strip() or "N/A",
+                "disk_percent": disk_result.stdout.strip() or "N/A"
             }
             
             return [TextContent(type="text", text=json.dumps(status, ensure_ascii=False))]
         except Exception as e:
             return [TextContent(type="text", text=f"오류: {str(e)}")]
     
-    return [TextContent(type="text", text="알 수 없는 Tool입니다")]
+    else:
+        return [TextContent(type="text", text="알 수 없는 Tool입니다")]
 
 async def main():
-    """MCP 서버 실행"""
+    """MCP 서버 실행 (stdio)"""
     async with stdio_server() as (read, write):
         await app.run(read, write, app.create_initialization_options())
 
