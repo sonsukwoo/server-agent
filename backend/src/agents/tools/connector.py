@@ -13,7 +13,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # MCP 서버 경로 (dotenv 로드 이후에 설정)
-MCP_SERVERS_DIR = Path(os.getenv("MCP_SERVERS_DIR", "/app/mcp-servers"))
+MCP_SERVERS_DIR = Path(os.getenv("MCP_SERVERS_DIR", "/app/mcp"))
 
 
 @asynccontextmanager

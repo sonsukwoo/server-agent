@@ -7,8 +7,12 @@ from pathlib import Path
 # 프로젝트 루트를 sys.path에 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from sqlalchemy import text
-from src.database.connection import engine
+from sqlalchemy import text, create_engine
+from config.settings import settings
+
+# DB 연결 설정
+DATABASE_URL = f"postgresql://{settings.db_user}:{settings.db_password}@{settings.db_host}:{settings.db_port}/{settings.db_name}"
+engine = create_engine(DATABASE_URL)
 
 SCHEMA_DIR = Path("schema")
 SCHEMA_DIR.mkdir(exist_ok=True)

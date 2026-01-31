@@ -1,25 +1,35 @@
 version: '3.8'
 
 services:
-  # 메인 에이전트 서버
-  agent:
-    build: .
-    container_name: server-agent
+  # Backend Agent (Includes MCP Servers)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: server-agent-backend
     ports:
       - "8000:8000"
     environment:
+      # Database Connection (External)
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT}
       - DB_NAME=${DB_NAME}
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
+
+      # OpenAI
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+      # Internal Paths
+      - MCP_SERVERS_DIR=/app/mcp
       - SCHEMA_DIR=/app/schema
     volumes:
-      - ./schema:/app/schema
-      - ./mcp-servers:/app/mcp-servers
+      - ./backend:/app
+      - ./backend/schema:/app/schema # Schema file persistence
     networks:
       - agent-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Allow access to host DB
 
 networks:
   agent-network:

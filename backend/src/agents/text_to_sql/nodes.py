@@ -19,7 +19,7 @@ from .prompts import (
     VALIDATE_RESULT_SYSTEM, VALIDATE_RESULT_USER,
     GENERATE_REPORT_SYSTEM, GENERATE_REPORT_USER,
 )
-from src.mcp_client.connector import postgres_client
+from src.agents.tools.connector import postgres_client
 
 # 타임존 설정 (한국 기준)
 TIMEZONE = os.getenv("TZ", "Asia/Seoul")

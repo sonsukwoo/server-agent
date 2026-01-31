@@ -11,6 +11,13 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# MCP Server 의존성 설치
+COPY mcp/postgres/requirements.txt mcp-postgres-reqs.txt
+RUN pip install --no-cache-dir -r mcp-postgres-reqs.txt
+
+COPY mcp/ubuntu/requirements.txt mcp-ubuntu-reqs.txt
+RUN pip install --no-cache-dir -r mcp-ubuntu-reqs.txt
+
 # 애플리케이션 코드 복사
 COPY . .
 
@@ -18,4 +25,4 @@ COPY . .
 EXPOSE 8000
 
 # 실행
-CMD ["python", "main.py"]
+CMD ["python", "-m", "src.api.main"]
