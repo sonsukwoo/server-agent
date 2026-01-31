@@ -14,7 +14,7 @@ from config.settings import settings
 DATABASE_URL = f"postgresql://{settings.db_user}:{settings.db_password}@{settings.db_host}:{settings.db_port}/{settings.db_name}"
 engine = create_engine(DATABASE_URL)
 
-SCHEMA_DIR = Path("schema")
+SCHEMA_DIR = Path(settings.schema_dir)
 SCHEMA_DIR.mkdir(exist_ok=True)
 
 def sync_schema():
