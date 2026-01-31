@@ -11,16 +11,12 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: str
     
-    # MCP Servers
-    mcp_postgres_url: str = "http://localhost:8001"
-    mcp_ubuntu_url: str = "http://localhost:8002"
-    
     # Timezone
     tz: str = "Asia/Seoul"
-    
-    # Paths (optional, for local development)
-    schema_dir: str | None = None
-    mcp_servers_dir: str | None = None
+
+    # Paths
+    schema_dir: str = "/app/schema"
+    mcp_servers_dir: str = "/app/mcp"
     
     class Config:
         env_file = ".env"

@@ -12,8 +12,10 @@ from contextlib import asynccontextmanager
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-# MCP 서버 경로 (dotenv 로드 이후에 설정)
-MCP_SERVERS_DIR = Path(os.getenv("MCP_SERVERS_DIR", "/app/mcp"))
+from config.settings import settings
+
+# MCP 서버 경로 (settings 이용)
+MCP_SERVERS_DIR = Path(settings.mcp_servers_dir)
 
 
 @asynccontextmanager
@@ -33,7 +35,7 @@ async def create_mcp_client(server_name: str):
     
     # 환경변수를 서버 프로세스에 전달
     env = dict(os.environ)
-    env["SCHEMA_DIR"] = os.getenv("SCHEMA_DIR", "/app/schema")
+    env["SCHEMA_DIR"] = settings.schema_dir
     
     server_params = StdioServerParameters(
         command="python",
@@ -92,7 +94,7 @@ async def test_postgres():
     print("PostgreSQL MCP 클라이언트 테스트")
     print("=" * 60)
     print(f"MCP_SERVERS_DIR: {MCP_SERVERS_DIR}")
-    print(f"SCHEMA_DIR: {os.getenv('SCHEMA_DIR')}")
+    print(f"SCHEMA_DIR: {settings.schema_dir}")
     
     async with postgres_client() as client:
         # Tool 목록 조회

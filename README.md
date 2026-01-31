@@ -6,10 +6,13 @@ LangGraph + MCP 기반 AI 에이전트로 자연어로 서버 정보 조회 및 
 
 ```
 server-agent/
-├── src/agents/          # LangGraph 에이전트
-├── mcp-servers/         # MCP Tool 서버들
-├── src/middleware/      # 안전장치 레이어
-└── schema/              # DB 스키마 캐시
+├── backend/             # Main Application & MCP Servers
+│   ├── src/api/         # FastAPI Server
+│   ├── src/agents/      # LangGraph Agents
+│   ├── mcp/             # MCP Servers (Postgres, Ubuntu)
+│   └── schema/          # DB Schema Cache
+├── frontend/            # Frontend Application (Planned)
+└── docker-compose.yml   # Orchestration
 ```
 
 ## 설치
