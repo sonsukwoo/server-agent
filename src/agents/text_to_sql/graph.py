@@ -1,80 +1,147 @@
-"""Text-to-SQL 에이전트 그래프 (LangGraph)"""
+"""Text-to-SQL 에이전트 LangGraph 워크플로우"""
 from langgraph.graph import StateGraph, END
-from typing import TypedDict
 
-class SQLAgentState(TypedDict):
-    """Text-to-SQL 에이전트 상태"""
-    user_question: str
-    selected_tables: list[str]
-    generated_sql: str
-    query_result: list[dict]
-    error_message: str
-    retry_count: int
-    final_answer: str
+from .state import TextToSQLState
+from .nodes import (
+    parse_request,
+    validate_request,
+    select_table,
+    generate_sql,
+    execute_sql,
+    validate_result,
+    generate_report,
+)
 
-def select_tables(state: SQLAgentState) -> SQLAgentState:
-    """1차 LLM: 테이블 선택"""
-    # TODO: LLM 호출하여 필요한 테이블 선택
-    return {"selected_tables": []}
 
-def generate_sql(state: SQLAgentState) -> SQLAgentState:
-    """2차 LLM: SQL 생성"""
-    # TODO: 선택된 테이블 스키마를 보고 SQL 생성
-    return {"generated_sql": ""}
+# ═══════════════════════════════════════════════════════════════
+# 조건부 분기 함수
+# ═══════════════════════════════════════════════════════════════
 
-def execute_query(state: SQLAgentState) -> SQLAgentState:
-    """MCP Tool: SQL 실행"""
-    # TODO: MCP execute_sql Tool 호출
-    return {"query_result": []}
+def check_request_valid(state: TextToSQLState) -> str:
+    """validate_request 후 분기"""
+    if state.get("is_request_valid", False):
+        return "valid"
+    return "invalid"
 
-def validate_result(state: SQLAgentState) -> str:
-    """검증 LLM: 결과 확인"""
-    # TODO: 결과가 요구사항에 맞는지 LLM으로 검증
-    if not state["query_result"]:
+
+def check_table_valid(state: TextToSQLState) -> str:
+    """select_table 후 분기"""
+    if state.get("is_table_valid", False):
+        return "valid"
+    return "invalid"
+
+
+def should_retry(state: TextToSQLState) -> str:
+    """validate_result 후 분기"""
+    if state.get("is_valid", False):
+        return "valid"
+    
+    # retry_count는 validate_result 노드에서 이미 증가됨
+    if state.get("retry_count", 0) < 3:
         return "retry"
-    return "valid"
+    return "fail"
 
-def analyze_error(state: SQLAgentState) -> SQLAgentState:
-    """오류 분석 LLM"""
-    # TODO: 왜 틀렸는지 분석
-    return {
-        "error_message": "분석 필요",
-        "retry_count": state["retry_count"] + 1
-    }
 
-def generate_summary(state: SQLAgentState) -> SQLAgentState:
-    """최종 요약 생성"""
-    # TODO: 결과를 자연어로 요약
-    return {"final_answer": ""}
+# ═══════════════════════════════════════════════════════════════
+# 그래프 빌드
+# ═══════════════════════════════════════════════════════════════
 
-# 그래프 구성
-def create_sql_agent():
+def build_text_to_sql_graph() -> StateGraph:
     """Text-to-SQL 에이전트 그래프 생성"""
-    workflow = StateGraph(SQLAgentState)
+    workflow = StateGraph(TextToSQLState)
     
+    # ─────────────────────────────────────────
     # 노드 추가
-    workflow.add_node("select_tables", select_tables)
+    # ─────────────────────────────────────────
+    workflow.add_node("parse_request", parse_request)
+    workflow.add_node("validate_request", validate_request)
+    workflow.add_node("select_table", select_table)
     workflow.add_node("generate_sql", generate_sql)
-    workflow.add_node("execute_query", execute_query)
-    workflow.add_node("analyze_error", analyze_error)
-    workflow.add_node("generate_summary", generate_summary)
+    workflow.add_node("execute_sql", execute_sql)
+    workflow.add_node("validate_result", validate_result)
+    workflow.add_node("generate_report", generate_report)
     
-    # 엣지 연결
-    workflow.set_entry_point("select_tables")
-    workflow.add_edge("select_tables", "generate_sql")
-    workflow.add_edge("generate_sql", "execute_query")
+    # ─────────────────────────────────────────
+    # 엔트리 포인트
+    # ─────────────────────────────────────────
+    workflow.set_entry_point("parse_request")
     
-    # 조건부 분기
+    # ─────────────────────────────────────────
+    # 순차 엣지
+    # ─────────────────────────────────────────
+    workflow.add_edge("parse_request", "validate_request")
+    workflow.add_edge("generate_sql", "execute_sql")
+    workflow.add_edge("execute_sql", "validate_result")
+    workflow.add_edge("generate_report", END)
+    
+    # ─────────────────────────────────────────
+    # 조건부 엣지: validate_request
+    # ─────────────────────────────────────────
     workflow.add_conditional_edges(
-        "execute_query",
-        validate_result,
+        "validate_request",
+        check_request_valid,
         {
-            "valid": "generate_summary",
-            "retry": "analyze_error"
+            "valid": "select_table",
+            "invalid": END  # 요청 검증 실패 시 즉시 종료
         }
     )
     
-    workflow.add_edge("analyze_error", "generate_sql")
-    workflow.add_edge("generate_summary", END)
+    # ─────────────────────────────────────────
+    # 조건부 엣지: select_table (NONE 처리)
+    # ─────────────────────────────────────────
+    workflow.add_conditional_edges(
+        "select_table",
+        check_table_valid,
+        {
+            "valid": "generate_sql",
+            "invalid": END  # 테이블 선택 실패 시 즉시 종료
+        }
+    )
     
-    return workflow.compile()
+    # ─────────────────────────────────────────
+    # 조건부 엣지: validate_result (재시도 루프)
+    # ─────────────────────────────────────────
+    workflow.add_conditional_edges(
+        "validate_result",
+        should_retry,
+        {
+            "valid": "generate_report",
+            "retry": "generate_sql",  # SQL 재생성
+            "fail": END               # 최대 재시도 초과
+        }
+    )
+    
+    return workflow
+
+
+# ═══════════════════════════════════════════════════════════════
+# 컴파일된 앱
+# ═══════════════════════════════════════════════════════════════
+
+# 그래프 빌드 및 컴파일
+graph = build_text_to_sql_graph()
+app = graph.compile()
+
+
+# ═══════════════════════════════════════════════════════════════
+# 편의 함수
+# ═══════════════════════════════════════════════════════════════
+
+async def run_text_to_sql(question: str) -> dict:
+    """
+    Text-to-SQL 에이전트 실행
+    
+    Args:
+        question: 사용자 자연어 질문
+        
+    Returns:
+        최종 상태 (report, suggested_actions 포함)
+    """
+    initial_state = {
+        "user_question": question,
+        "retry_count": 0
+    }
+    
+    result = await app.ainvoke(initial_state)
+    return result
+

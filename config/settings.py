@@ -18,8 +18,13 @@ class Settings(BaseSettings):
     # Timezone
     tz: str = "Asia/Seoul"
     
+    # Paths (optional, for local development)
+    schema_dir: str | None = None
+    mcp_servers_dir: str | None = None
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "allow"  # .env의 추가 필드 허용
 
 settings = Settings()
