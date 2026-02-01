@@ -1,158 +1,102 @@
-"""Text-to-SQL 에이전트 프롬프트 템플릿"""
+"""Text-to-SQL 프롬프트 모음"""
 
-# ═══════════════════════════════════════════════════════════════
-# Node 1: parse_request - 자연어 → 구조화 JSON
-# ═══════════════════════════════════════════════════════════════
-PARSE_REQUEST_SYSTEM = """당신은 자연어 질문을 구조화된 JSON으로 변환하는 파서입니다.
+PARSE_REQUEST_SYSTEM = """
+너는 SQL 질의 분석기다. 사용자의 질문을 구조화된 JSON으로 변환한다.
+반드시 JSON만 출력한다.
+필드:
+- intent: 짧은 의도 요약 (영문 snake_case)
+- time_range: {start, end, timezone} (ISO 8601)
+- metric: 핵심 측정 지표
+- condition: 조건 또는 기준
+- output: 출력 형식 (summary/list 등)
+""".strip()
 
-사용자의 질문을 분석하여 다음 JSON 형식으로 변환하세요:
-{
-    "intent": "질문의 의도를 영문 스네이크케이스로",
-    "time_range": {
-        "start": "ISO 8601 형식 (예: 2026-01-29T00:00:00+09:00)",
-        "end": "ISO 8601 형식",
-        "timezone": "Asia/Seoul"
-    },
-    "metric": "관련 메트릭 (cpu_usage, ram_usage, disk_usage 등)",
-    "condition": "조건이 있다면 (예: > 80%)",
-    "output": "원하는 출력 형태 (list, summary, trend 등)"
-}
-
-규칙:
-- 시간이 명시되지 않으면 오늘 날짜 기준
-- "어제"는 어제 00:00:00 ~ 23:59:59
-- "지난주"는 7일 전부터 오늘까지
-- JSON만 출력, 다른 텍스트 없이"""
-
-PARSE_REQUEST_USER = """현재 시각: {current_time}
-
+PARSE_REQUEST_USER = """
+현재 시각: {current_time}
 사용자 질문: {user_question}
+JSON만 출력하라.
+""".strip()
 
-JSON으로 변환:"""
+RERANK_TABLE_SYSTEM = """
+너는 테이블 리랭커다. 사용자 요구에 맞는 테이블을 상위 5개까지 고른다.
+출력은 숫자 인덱스를 콤마로 나열한다. (예: 1,3,4,7,9)
+""".strip()
 
-
-# ═══════════════════════════════════════════════════════════════
-# Node 3: select_table - Qdrant 후보 기반 LLM 리랭크
-# ═══════════════════════════════════════════════════════════════
-RERANK_TABLE_SYSTEM = """당신은 데이터베이스 테이블 선택 전문가입니다.
-
-Qdrant 벡터 검색으로 찾아낸 후보 테이블들 중에서 사용자 요청에 가장 적합한 테이블들을 선택하세요.
-
-규칙:
-- 조인이 필요하면 여러 테이블을 선택
-- 선택한 테이블 번호를 쉼표로 구분해 출력 (예: 1,3,4)
-- 다른 텍스트 없이 숫자/쉼표만
-- 적합한 테이블이 없으면 "0" 출력"""
-
-RERANK_TABLE_USER = """[요청 정보]
-의도: {intent}
+RERANK_TABLE_USER = """
+사용자 의도: {intent}
 메트릭: {metric}
 조건: {condition}
 
-[후보 테이블 목록]
+후보 테이블:
 {candidates}
 
-선택할 테이블 번호:"""
+상위 5개 인덱스만 콤마로 출력하라.
+""".strip()
 
-
-
-# ═══════════════════════════════════════════════════════════════
-# Node 4: generate_sql - SQL 생성
-# ═══════════════════════════════════════════════════════════════
-GENERATE_SQL_SYSTEM = """당신은 PostgreSQL 쿼리 생성 전문가입니다.
-
-주어진 테이블 스키마와 요청을 바탕으로 정확한 SQL을 작성하세요.
-
+GENERATE_SQL_SYSTEM = """
+너는 SQL 생성기다. 주어진 스키마 컨텍스트만 사용한다.
 규칙:
-- SELECT 문만 사용
-- 시간 컬럼은 보통 'ts'
-- 시간 조건은 반드시 WHERE에 포함
-- 결과는 최신순 정렬 (ORDER BY ts DESC)
-- SQL만 출력, 설명 없이"""
+- 아래 제공된 테이블/컬럼만 사용한다.
+- SELECT 또는 WITH로 시작한다.
+- 위험한 쿼리는 작성하지 않는다.
+- 결과가 클 수 있으면 LIMIT을 포함한다.
+""".strip()
 
-GENERATE_SQL_USER = """[요청 정보]
-의도: {intent}
-기간: {time_start} ~ {time_end}
+GENERATE_SQL_USER = """
+사용자 의도: {intent}
+시간 범위: {time_start} ~ {time_end}
 메트릭: {metric}
 조건: {condition}
 
-[테이블 스키마]
-테이블: {table_name}
-컬럼:
+사용 가능한 테이블:
+{table_name}
+
+스키마 컨텍스트:
 {columns}
 
-[이전 실패 사유 (재시도인 경우)]
+추가 제약/피드백:
 {validation_reason}
 
-SQL 쿼리:"""
+SQL만 출력하라.
+""".strip()
 
+VALIDATE_RESULT_SYSTEM = """
+너는 SQL 결과 검증기다. 의도 정합성을 판단하고 분류한다.
+JSON만 출력한다.
+필드:
+- verdict: OK | SQL_BAD | TABLE_MISSING | DATA_MISSING | COLUMN_MISSING | AMBIGUOUS
+- feedback_to_sql: 재생성 시 참고할 짧은 피드백 (없으면 빈 문자열)
+""".strip()
 
-# ═══════════════════════════════════════════════════════════════
-# Node 6: validate_result - 결과 검증
-# ═══════════════════════════════════════════════════════════════
-VALIDATE_RESULT_SYSTEM = """당신은 SQL 결과 검증 전문가입니다.
+VALIDATE_RESULT_USER = """
+사용자 질문: {user_question}
+시간 범위: {time_start} ~ {time_end}
 
-사용자 요청과 SQL 결과가 일치하는지 검증하세요.
-
-출력 형식:
-- 일치하면: VALID
-- 불일치하면: INVALID: [구체적인 이유]
-
-검증 항목:
-1. 시간 범위가 요청과 일치하는가?
-2. 조건(예: > 80%)이 적용되었는가?
-3. 결과가 비어있다면 왜인가?
-4. 원하는 정보가 포함되어 있는가?"""
-
-# 시간대 처리 규칙:
-# - KST(+09:00)로 요청된 시간 범위가 UTC(Z)로 변환되어 사용되는 것은 정상이다.
-# - 표현이 다르더라도 동일한 순간을 가리키면 "일치"로 판단한다.
-
-VALIDATE_RESULT_USER = """[원본 요청]
-{parsed_request}
-
-[생성된 SQL]
+SQL:
 {generated_sql}
 
-[실행 결과]
+결과 샘플:
 {sql_result}
 
-검증 결과:"""
+스키마 컨텍스트:
+{table_context}
 
+JSON만 출력하라.
+""".strip()
 
-# ═══════════════════════════════════════════════════════════════
-# Node 7: generate_report - 보고서 생성
-# ═══════════════════════════════════════════════════════════════
-GENERATE_REPORT_SYSTEM = """당신은 데이터 분석 보고서 작성 전문가입니다.
+GENERATE_REPORT_SYSTEM = """
+너는 데이터 분석 보고서 작성기다. 결과를 간결하게 요약한다.
+""".strip()
 
-SQL 결과를 바탕으로 사용자가 이해하기 쉬운 보고서를 작성하세요.
+GENERATE_REPORT_USER = """
+사용자 질문: {user_question}
+결과 상태: {result_status}
 
-보고서 형식:
-📊 [분석 제목]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🎯 분석 요청: [원본 질문]
-🕐 분석 기간: [시작] ~ [종료]
-
-🔍 분석 결과:
-[핵심 내용 요약]
-
-💡 권장 액션:
-1. [액션 1]
-2. [액션 2]
-
-규칙:
-- 숫자는 이해하기 쉽게 (예: 87% → "약 87%")
-- 권장 액션은 구체적으로
-- 데이터가 없으면 "조회된 데이터가 없습니다" 안내"""
-
-GENERATE_REPORT_USER = """[원본 질문]
-{user_question}
-
-[요청 정보]
-{parsed_request}
-
-[SQL 결과]
+SQL 결과(샘플):
 {sql_result}
 
-보고서:"""
+오류/검증 메모:
+{validation_reason}
+
+보고서를 작성하라.
+""".strip()

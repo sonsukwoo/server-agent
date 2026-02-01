@@ -1,68 +1,75 @@
 """Text-to-SQL 에이전트 State 정의"""
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, Literal
 
 
 class ParsedRequest(TypedDict, total=False):
     """구조화된 요구사항"""
-    intent: str                  # 의도 (예: "find_processes_when_ram_high")
-    time_range: dict             # {"start": str, "end": str, "timezone": str}
-    metric: Optional[str]        # 메트릭 (예: "ram_usage", "cpu_usage")
-    condition: Optional[str]     # 조건 (예: "> 80%")
-    output: Optional[str]        # 출력 형태 (예: "process_list", "summary")
+    intent: str
+    time_range: dict  # {"start": str, "end": str, "timezone": str}
+    metric: Optional[str]
+    condition: Optional[str]
+    output: Optional[str]
 
 
 class TableCandidate(TypedDict, total=False):
     """Qdrant 검색 결과 테이블 후보"""
-    table_name: str              # 전체 테이블명 (예: ops_metrics.metrics_system)
-    description: str             # 테이블 설명
-    columns: list[dict]          # 컬럼 정보 [{"name": ..., "type": ..., "description": ...}]
-    score: float                 # 유사도 점수
+    table_name: str
+    description: str
+    columns: list[dict]
+    score: float
+    join_keys: list[str]
+    primary_time_col: Optional[str]
+
+
+Verdict = Literal[
+    "OK",
+    "SQL_BAD",
+    "TABLE_MISSING",
+    "DATA_MISSING",
+    "COLUMN_MISSING",
+    "PERMISSION",
+    "TYPE_ERROR",
+    "TIMEOUT",
+    "DB_CONN_ERROR",
+    "AMBIGUOUS",
+]
 
 
 class TextToSQLState(TypedDict, total=False):
     """Text-to-SQL 에이전트 상태"""
-    
-    # ═══════════════════════════════════════════
+
     # 입력
-    # ═══════════════════════════════════════════
-    user_question: str               # 원본 자연어 질문
-    
-    # ═══════════════════════════════════════════
-    # Step 1: 구조화 (parse_request)
-    # ═══════════════════════════════════════════
-    parsed_request: ParsedRequest    # LLM이 구조화한 요구사항
-    
-    # ═══════════════════════════════════════════
-    # Step 2: 검증 (validate_request)
-    # ═══════════════════════════════════════════
-    is_request_valid: bool           # 요구사항 검증 통과 여부
-    request_error: str               # 검증 실패 시 에러 메시지
-    
-    # ═══════════════════════════════════════════
-    # Step 3-4: 테이블 검색 및 SQL 생성
-    # ═══════════════════════════════════════════
-    table_candidates: list[TableCandidate]  # Qdrant 검색 후보 테이블 목록
-    selected_tables: list[str]       # 리랭크 후 선택된 테이블명 목록
-    is_table_valid: bool             # 테이블 선택 성공 여부
-    table_error: str                 # 테이블 선택 실패 시 에러 메시지
-    table_context: str               # LLM에 전달할 테이블/컬럼 컨텍스트 문자열
-    generated_sql: str               # 생성된 SQL 쿼리
-    
-    # ═══════════════════════════════════════════
-    # Step 5: 실행 (execute_sql)
-    # ═══════════════════════════════════════════
-    sql_result: list[dict]           # SQL 실행 결과
-    sql_error: str                   # SQL 에러 메시지
-    
-    # ═══════════════════════════════════════════
-    # Step 6: 검증/재시도 (validate_result)
-    # ═══════════════════════════════════════════
-    is_valid: bool                   # 결과 검증 통과 여부
-    validation_reason: str           # 검증 실패 사유
-    retry_count: int                 # 재시도 횟수 (최대 3)
-    
-    # ═══════════════════════════════════════════
-    # Step 7: 보고서 (generate_report)
-    # ═══════════════════════════════════════════
-    report: str                      # 최종 보고서
-    suggested_actions: list[str]     # 권장 액션 목록
+    user_question: str
+
+    # 파싱
+    parsed_request: ParsedRequest
+    is_request_valid: bool
+    request_error: str
+
+    # 검색/선택
+    table_candidates: list[TableCandidate]
+    selected_tables: list[str]
+    table_context: str
+    candidate_offset: int  # 확장 시작 인덱스
+
+    # SQL 생성/실행
+    generated_sql: str
+    sql_guard_error: str
+    sql_result: list[dict]
+    sql_error: str
+
+    # 결과/검증
+    result_status: str  # ok | empty | error
+    verdict: Verdict
+    validation_reason: str
+    feedback_to_sql: str
+
+    # 루프 카운터
+    sql_retry_count: int
+    table_expand_count: int
+    validation_retry_count: int
+    total_loops: int
+
+    # 보고서
+    report: str
+    suggested_actions: list[str]

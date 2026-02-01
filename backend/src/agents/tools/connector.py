@@ -86,31 +86,4 @@ async def ubuntu_client():
         yield client
 
 
-# 테스트용
-async def test_postgres():
-    """PostgreSQL MCP 클라이언트 테스트"""
-    print("=" * 60)
-    print("PostgreSQL MCP 클라이언트 테스트")
-    print("=" * 60)
-    print(f"MCP_SERVERS_DIR: {MCP_SERVERS_DIR}")
-    
-    async with postgres_client() as client:
-        # Tool 목록 조회
-        tools = await client.list_tools()
-        print(f"\n✅ Tool 개수: {len(tools)}개")
-        for tool in tools:
-            print(f"  - {tool.name}: {tool.description}")
-        
-        # execute_sql 테스트
-        print("\n📋 execute_sql 테스트 (SELECT 1)...")
-        result = await client.call_tool("execute_sql", {"query": "SELECT 1 AS test"})
-        print(f"✅ 결과: {result}")
-    
-    print("\n" + "=" * 60)
-    print("✅ 테스트 완료!")
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    asyncio.run(test_postgres())
 
