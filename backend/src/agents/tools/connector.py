@@ -29,13 +29,12 @@ async def create_mcp_client(server_name: str):
     Usage:
         async with create_mcp_client("postgres") as client:
             tools = await client.list_tools()
-            result = await client.call_tool("get_table_list")
+            result = await client.call_tool("execute_sql", {"query": "SELECT 1"})
     """
     server_path = MCP_SERVERS_DIR / server_name / "server.py"
     
     # 환경변수를 서버 프로세스에 전달
     env = dict(os.environ)
-    env["SCHEMA_DIR"] = settings.schema_dir
     
     server_params = StdioServerParameters(
         command="python",
@@ -94,7 +93,6 @@ async def test_postgres():
     print("PostgreSQL MCP 클라이언트 테스트")
     print("=" * 60)
     print(f"MCP_SERVERS_DIR: {MCP_SERVERS_DIR}")
-    print(f"SCHEMA_DIR: {settings.schema_dir}")
     
     async with postgres_client() as client:
         # Tool 목록 조회
@@ -103,15 +101,10 @@ async def test_postgres():
         for tool in tools:
             print(f"  - {tool.name}: {tool.description}")
         
-        # get_table_list 호출
-        print("\n📋 get_table_list 호출...")
-        result = await client.call_tool("get_table_list")
-        tables = json.loads(result)
-        print(f"✅ 테이블 개수: {len(tables)}개")
-        for i, table in enumerate(tables[:3], 1):
-            print(f"  {i}. {table['name']}")
-        if len(tables) > 3:
-            print(f"  ... 외 {len(tables) - 3}개")
+        # execute_sql 테스트
+        print("\n📋 execute_sql 테스트 (SELECT 1)...")
+        result = await client.call_tool("execute_sql", {"query": "SELECT 1 AS test"})
+        print(f"✅ 결과: {result}")
     
     print("\n" + "=" * 60)
     print("✅ 테스트 완료!")
@@ -120,3 +113,4 @@ async def test_postgres():
 
 if __name__ == "__main__":
     asyncio.run(test_postgres())
+

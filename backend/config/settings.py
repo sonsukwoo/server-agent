@@ -10,12 +10,26 @@ class Settings(BaseSettings):
     
     # OpenAI
     openai_api_key: str
+    model_fast: str = "gpt-4o-mini"  # 빠르고 저렴한 모델 (파싱, 리포팅)
+    model_smart: str = "gpt-4o"      # 똑똑한 모델 (SQL 생성, 검증)
+
+    
+    # Qdrant
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
+    qdrant_collection: str = "table_index"
+    enable_table_rerank: bool = True
+
+    # Embeddings / Schema sync
+    enable_schema_sync: bool = True
+    embedding_model: str = "text-embedding-3-small"
+    schema_hash_file: str = "/app/.schema_hash"
+    schema_namespaces: str = ""  # comma-separated; empty means auto-detect user schemas
     
     # Timezone
     tz: str = "Asia/Seoul"
 
     # Paths
-    schema_dir: str = "/app/schema"
     mcp_servers_dir: str = "/app/mcp_servers"
     
     class Config:

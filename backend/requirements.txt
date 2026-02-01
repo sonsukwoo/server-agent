@@ -15,10 +15,12 @@ uvicorn>=0.27.0
 psycopg2-binary>=2.9.9
 sqlalchemy>=2.0.0
 
+# 벡터 데이터베이스
+qdrant-client>=1.7.0
+
 # 미들웨어 & 안전장치
 guardrails-ai>=0.4.0
 
 # 유틸
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
-apscheduler>=3.10.0

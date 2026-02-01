@@ -69,9 +69,9 @@ def build_text_to_sql_graph() -> StateGraph:
     # ─────────────────────────────────────────
     # 순차 엣지
     # ─────────────────────────────────────────
-    workflow.add_edge("parse_request", "validate_request")
+    workflow.add_edge("parse_request", "select_table")
     workflow.add_edge("generate_sql", "execute_sql")
-    workflow.add_edge("execute_sql", "validate_result")
+    workflow.add_edge("execute_sql", "generate_report")
     workflow.add_edge("generate_report", END)
     
     # ─────────────────────────────────────────
@@ -144,4 +144,3 @@ async def run_text_to_sql(question: str) -> dict:
     
     result = await app.ainvoke(initial_state)
     return result
-

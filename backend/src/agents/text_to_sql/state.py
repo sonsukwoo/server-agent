@@ -11,6 +11,14 @@ class ParsedRequest(TypedDict, total=False):
     output: Optional[str]        # 출력 형태 (예: "process_list", "summary")
 
 
+class TableCandidate(TypedDict, total=False):
+    """Qdrant 검색 결과 테이블 후보"""
+    table_name: str              # 전체 테이블명 (예: ops_metrics.metrics_system)
+    description: str             # 테이블 설명
+    columns: list[dict]          # 컬럼 정보 [{"name": ..., "type": ..., "description": ...}]
+    score: float                 # 유사도 점수
+
+
 class TextToSQLState(TypedDict, total=False):
     """Text-to-SQL 에이전트 상태"""
     
@@ -31,13 +39,13 @@ class TextToSQLState(TypedDict, total=False):
     request_error: str               # 검증 실패 시 에러 메시지
     
     # ═══════════════════════════════════════════
-    # Step 3-4: 테이블/SQL
+    # Step 3-4: 테이블 검색 및 SQL 생성
     # ═══════════════════════════════════════════
-    table_list: list[dict]           # 전체 테이블 목록
-    selected_table: str              # 선택된 테이블명
+    table_candidates: list[TableCandidate]  # Qdrant 검색 후보 테이블 목록
+    selected_tables: list[str]       # 리랭크 후 선택된 테이블명 목록
     is_table_valid: bool             # 테이블 선택 성공 여부
     table_error: str                 # 테이블 선택 실패 시 에러 메시지
-    table_schema: dict               # 선택된 테이블 스키마
+    table_context: str               # LLM에 전달할 테이블/컬럼 컨텍스트 문자열
     generated_sql: str               # 생성된 SQL 쿼리
     
     # ═══════════════════════════════════════════

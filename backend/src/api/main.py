@@ -3,7 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from src.agents.text_to_sql import run_text_to_sql
 from src.agents.middleware.input_guard import InputGuard
-from scripts.scheduler import scheduler
+from src.embeddings.schema_sync import sync_schema_embeddings
+from config.settings import settings
+import asyncio
 
 class QueryRequest(BaseModel):
     agent: str  # "sql" 또는 "ubuntu"
@@ -31,8 +33,9 @@ async def root():
 
 @app.on_event("startup")
 async def startup_event():
-    """서버 시작 시 스케줄러 가동"""
-    scheduler.start()
+    """서버 시작 시 스키마 임베딩 동기화"""
+    if settings.enable_schema_sync:
+        await asyncio.to_thread(sync_schema_embeddings)
 
 @app.post("/query", response_model=QueryResponse)
 async def query(body: QueryRequest):

@@ -14,19 +14,21 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from .state import TextToSQLState
 from .prompts import (
     PARSE_REQUEST_SYSTEM, PARSE_REQUEST_USER,
-    SELECT_TABLE_SYSTEM, SELECT_TABLE_USER,
+    RERANK_TABLE_SYSTEM, RERANK_TABLE_USER,
     GENERATE_SQL_SYSTEM, GENERATE_SQL_USER,
     VALIDATE_RESULT_SYSTEM, VALIDATE_RESULT_USER,
     GENERATE_REPORT_SYSTEM, GENERATE_REPORT_USER,
 )
+from config.settings import settings
+from src.agents.tools.qdrant_client import search_related_tables
 from src.agents.tools.connector import postgres_client
 
 # 타임존 설정 (한국 기준)
-TIMEZONE = os.getenv("TZ", "Asia/Seoul")
+TIMEZONE = settings.tz
 
-# LLM 인스턴스 (나중에 변경 가능)
-llm_fast = ChatOpenAI(model="gpt-4o-mini", temperature=0)  # 파싱/보고서
-llm_smart = ChatOpenAI(model="gpt-4o", temperature=0)       # SQL 생성/검증
+# LLM 인스턴스
+llm_fast = ChatOpenAI(model=settings.model_fast, temperature=0)  # 파싱/보고서
+llm_smart = ChatOpenAI(model=settings.model_smart, temperature=0) # SQL 생성/검증
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -52,8 +54,9 @@ def normalize_sql(sql: str) -> str:
     if match:
         sql = match.group(1).strip()
     
-    # 1. SELECT-only 검증
-    if not sql.upper().startswith("SELECT"):
+    # 1. SELECT-only 검증 (CTE 허용)
+    upper_sql = sql.upper()
+    if not (upper_sql.startswith("SELECT") or upper_sql.startswith("WITH")):
         raise ValueError(f"SELECT 쿼리만 허용됩니다. 받은 쿼리: {sql[:50]}...")
     
     # 2. 위험한 키워드 차단
@@ -180,52 +183,121 @@ async def validate_request(state: TextToSQLState) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-# Node 3: select_table
+# Node 3: select_table (Qdrant 검색 + LLM 리랭크)
 # ═══════════════════════════════════════════════════════════════
 
 async def select_table(state: TextToSQLState) -> dict:
-    """적합한 테이블 선택"""
+    """Qdrant 벡터 검색 및 LLM 리랭크로 적합한 테이블 선택"""
+    
     parsed = state["parsed_request"]
+    user_question = state["user_question"]
     
-    # MCP로 테이블 목록 조회
-    async with postgres_client() as client:
-        result = await client.call_tool("get_table_list")
-        table_list = json.loads(result)
+    # 1. Qdrant 벡터 검색 (Top-10 후보)
+    candidates = await search_related_tables(user_question, top_k=10)
     
-    # 테이블 목록 포맷팅
-    table_str = "\n".join([
-        f"- {t['name']}: {t.get('description', 'N/A')}"
-        for t in table_list
-    ])
-    
-    messages = [
-        SystemMessage(content=SELECT_TABLE_SYSTEM),
-        HumanMessage(content=SELECT_TABLE_USER.format(
-            intent=parsed.get("intent", ""),
-            metric=parsed.get("metric", "N/A"),
-            condition=parsed.get("condition", "N/A"),
-            table_list=table_str
-        ))
-    ]
-    
-    response = await llm_fast.ainvoke(messages)
-    selected = response.content.strip()
-    
-    # NONE 반환 시 테이블 선택 실패
-    if selected.upper() == "NONE" or not selected:
+    if not candidates:
         return {
-            "table_list": table_list,
-            "selected_table": "",
+            "table_candidates": [],
+            "selected_tables": [],
             "is_table_valid": False,
-            "table_error": "요청에 적합한 테이블을 찾지 못했습니다. 질문을 더 구체적으로 해주세요."
+            "table_error": "Qdrant에서 관련 테이블을 찾지 못했습니다. 컬렉션이 비어있거나 연결에 실패했습니다.",
+            "table_context": "",
         }
     
+    # 2. 후보 테이블 포맷팅 (LLM 리랭크용)
+    candidates_str = ""
+    for i, c in enumerate(candidates, 1):
+        col_names = ", ".join([col.get("name", "") for col in c.get("columns", [])[:5]])
+        join_keys = ", ".join(c.get("join_keys", []) or [])
+        primary_time_col = c.get("primary_time_col", "")
+        candidates_str += (
+            f"{i}. {c['table_name']}\n"
+            f"   설명: {c['description']}\n"
+            f"   시간 컬럼: {primary_time_col}\n"
+            f"   조인 키: {join_keys}\n"
+            f"   주요 컬럼: {col_names}\n"
+            f"   유사도: {c['score']}\n\n"
+        )
+    
+    # 3. LLM 리랭크 (비활성화 가능)
+    if settings.enable_table_rerank:
+        messages = [
+            SystemMessage(content=RERANK_TABLE_SYSTEM),
+            HumanMessage(content=RERANK_TABLE_USER.format(
+                intent=parsed.get("intent", ""),
+                metric=parsed.get("metric", "N/A"),
+                condition=parsed.get("condition", "N/A"),
+                candidates=candidates_str
+            ))
+        ]
+        
+        response = await llm_fast.ainvoke(messages)
+        selected_idx_str = response.content.strip()
+    else:
+        # 리랭크 비활성화: Qdrant 상위 후보(기본 3개) 사용
+        top_n = min(3, len(candidates))
+        selected_idx_str = ",".join(str(i) for i in range(1, top_n + 1))
+    
+    # 4. 선택 결과 처리
+    try:
+        import re
+        selected_indices = [int(n) for n in re.findall(r"\d+", selected_idx_str)]
+    except ValueError:
+        selected_indices = []
+    
+    # 0 또는 유효하지 않은 경우 처리
+    if not selected_indices or any(idx == 0 for idx in selected_indices):
+        return {
+            "table_candidates": candidates,
+            "selected_tables": [],
+            "is_table_valid": False,
+            "table_error": "요청에 적합한 테이블을 찾지 못했습니다. 질문을 더 구체적으로 해주세요.",
+            "table_context": "",
+        }
+    
+    # 유효한 인덱스만 필터링
+    valid_indices = [
+        idx for idx in selected_indices
+        if 1 <= idx <= len(candidates)
+    ]
+    if not valid_indices:
+        return {
+            "table_candidates": candidates,
+            "selected_tables": [],
+            "is_table_valid": False,
+            "table_error": "요청에 적합한 테이블을 찾지 못했습니다. 질문을 더 구체적으로 해주세요.",
+            "table_context": "",
+        }
+    
+    # 5. 선택된 테이블 정보로 컨텍스트 생성
+    selected_tables = []
+    context_blocks = []
+    for idx in valid_indices:
+        selected = candidates[idx - 1]
+        selected_tables.append(selected["table_name"])
+        columns_str = "\n".join([
+            f"- {col.get('name', '')} ({col.get('type', '')}): {col.get('description', 'N/A')}"
+            for col in selected.get("columns", [])
+        ])
+        join_keys = ", ".join(selected.get("join_keys", []) or [])
+        primary_time_col = selected.get("primary_time_col", "")
+        context_blocks.append(
+            f"테이블: {selected['table_name']}\n"
+            f"설명: {selected['description']}\n"
+            f"시간 컬럼: {primary_time_col}\n"
+            f"조인 키: {join_keys}\n\n"
+            f"컬럼:\n{columns_str}"
+        )
+    table_context = "\n\n---\n\n".join(context_blocks)
+    
     return {
-        "table_list": table_list,
-        "selected_table": selected,
+        "table_candidates": candidates,
+        "selected_tables": selected_tables,
         "is_table_valid": True,
-        "table_error": ""
+        "table_error": "",
+        "table_context": table_context,
     }
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -233,21 +305,12 @@ async def select_table(state: TextToSQLState) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 async def generate_sql(state: TextToSQLState) -> dict:
-    """SQL 쿼리 생성"""
+    """SQL 쿼리 생성 (table_context 활용)"""
     parsed = state["parsed_request"]
-    selected_table = state["selected_table"]
+    selected_tables = state.get("selected_tables", [])
+    table_context = state.get("table_context", "")
     validation_reason = state.get("validation_reason", "")
-    
-    # MCP로 테이블 스키마 조회
-    async with postgres_client() as client:
-        result = await client.call_tool("get_table_schema", {"table_name": selected_table})
-        schema = json.loads(result)
-    
-    # 컬럼 정보 포맷팅
-    columns_str = "\n".join([
-        f"- {col['name']} ({col['type']}): {col.get('description', 'N/A')}"
-        for col in schema.get("columns", [])
-    ])
+    table_name_str = ", ".join(selected_tables) if selected_tables else "N/A"
     
     # 시간 범위
     time_range = parsed.get("time_range", {})
@@ -260,8 +323,8 @@ async def generate_sql(state: TextToSQLState) -> dict:
             time_end=time_range.get("end", "N/A"),
             metric=parsed.get("metric", "N/A"),
             condition=parsed.get("condition", "N/A"),
-            table_name=selected_table,
-            columns=columns_str,
+            table_name=table_name_str,
+            columns=table_context,  # table_context 직접 사용
             validation_reason=validation_reason or "없음"
         ))
     ]
@@ -273,9 +336,9 @@ async def generate_sql(state: TextToSQLState) -> dict:
     sql = normalize_sql(sql)
     
     return {
-        "table_schema": schema,
         "generated_sql": sql
     }
+
 
 
 # ═══════════════════════════════════════════════════════════════
