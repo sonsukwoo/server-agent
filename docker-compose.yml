@@ -72,6 +72,19 @@ services:
     networks:
       - agent-network
 
+  # Frontend (Vite + React)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: server-agent-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - agent-network
+
 networks:
   agent-network:
     driver: bridge

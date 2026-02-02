@@ -236,7 +236,7 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
 
     return {
         "table_candidates": filtered,
-        "candidate_offset": TOP_K,
+        "candidate_offset": len(filtered),
     }
 
 
