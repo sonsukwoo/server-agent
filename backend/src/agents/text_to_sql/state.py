@@ -70,6 +70,9 @@ class TextToSQLState(TypedDict, total=False):
     validation_retry_count: int
     total_loops: int
 
+    # 기록 (디버깅 및 재시도용)
+    failed_queries: list[str]
+
     # 보고서
     report: str
     suggested_actions: list[str]

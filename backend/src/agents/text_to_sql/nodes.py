@@ -339,6 +339,8 @@ async def generate_sql(state: TextToSQLState) -> dict:
         state.get("validation_retry_count", 0),
         state.get("total_loops", 0),
     )
+    failed_queries_str = "\n".join([f"- {q}" for q in state.get("failed_queries", [])]) or "없음"
+
     messages = [
         SystemMessage(content=GENERATE_SQL_SYSTEM),
         HumanMessage(content=GENERATE_SQL_USER.format(
@@ -349,6 +351,7 @@ async def generate_sql(state: TextToSQLState) -> dict:
             condition=parsed.get("condition", "N/A"),
             table_name=table_name_str,
             columns=state.get("table_context", ""),
+            failed_queries=failed_queries_str,
             validation_reason=validation_reason,
         )),
     ]
@@ -411,14 +414,23 @@ async def normalize_result(state: TextToSQLState) -> dict:
     # [입력] sql_result, sql_error
     # [출력] result_status, verdict, validation_reason, feedback_to_sql
     sql_error = state.get("sql_error")
+    failed_queries = list(state.get("failed_queries", []) or [])
+    current_sql = state.get("generated_sql", "")
+
     if sql_error:
         verdict, reason = classify_sql_error(sql_error)
         logger.error("TEXT_TO_SQL:normalize_result sql_error=%s verdict=%s", sql_error, verdict)
+        
+        if current_sql and current_sql not in failed_queries:
+            failed_queries.append(current_sql)
+            failed_queries = failed_queries[-3:]
+
         return {
             "result_status": "error",
             "verdict": verdict,
             "validation_reason": reason,
             "feedback_to_sql": reason,
+            "failed_queries": failed_queries,
             "total_loops": state.get("total_loops", 0) + 1,
         }
 
@@ -426,6 +438,8 @@ async def normalize_result(state: TextToSQLState) -> dict:
         logger.info("TEXT_TO_SQL:normalize_result empty_result")
         return {
             "result_status": "empty",
+            "failed_queries": failed_queries, # 현재 상태 유지
+            # 결과가 없어도 쿼리 자체는 문법적으로 맞으므로 아직 failed_queries에 넣지 않음 (validate_llm에서 결정)
         }
 
     return {"result_status": "ok"}
@@ -472,53 +486,73 @@ async def validate_llm(state: TextToSQLState) -> dict:
 
     verdict = parsed_json.get("verdict", "AMBIGUOUS")
     feedback = parsed_json.get("feedback_to_sql", "")
+    hint = parsed_json.get("correction_hint", "")
     unnecessary = parsed_json.get("unnecessary_tables", []) or []
 
-    # 불필요 테이블 제거 요청이 있으면 목록 갱신 후 재생성 유도
+    failed_queries = list(state.get("failed_queries", []) or [])
+    current_sql = state.get("generated_sql", "")
+    if current_sql and current_sql not in failed_queries:
+        failed_queries.append(current_sql)
+        failed_queries = failed_queries[-3:]
+
     if unnecessary:
-        current = list(state.get("selected_tables", []) or [])
-        filtered = [t for t in current if t not in unnecessary]
+        current_tables = list(state.get("selected_tables", []) or [])
+        filtered = [t for t in current_tables if t not in unnecessary]
         candidates = state.get("table_candidates", []) or []
         _, new_context = rebuild_context_from_candidates(candidates, filtered)
         if filtered:
-            logger.info("TEXT_TO_SQL:validate_llm unnecessary_tables=%s", unnecessary)
             return {
                 "selected_tables": filtered,
                 "table_context": new_context,
                 "verdict": "SQL_BAD",
-                "feedback_to_sql": "불필요 테이블을 제외하고 다시 작성하세요.",
-                "validation_reason": "불필요 테이블 제거 필요",
+                "feedback_to_sql": "불필요한 테이블을 제외하고 다시 작성하세요.",
+                "failed_queries": failed_queries,
                 "validation_retry_count": state.get("validation_retry_count", 0) + 1,
                 "total_loops": state.get("total_loops", 0) + 1,
             }
 
-    # 스키마가 충분한데 결과가 빠진 경우 DATA_MISSING을 SQL_BAD로 보정
     if verdict == "DATA_MISSING":
         question = state.get("user_question", "").lower()
         context = state.get("table_context", "").lower()
-        needs_ram = "램" in question or "ram" in question
-        needs_cpu = "cpu" in question or "시피유" in question
-        needs_docker = "도커" in question or "docker" in question or "컨테이너" in question
-
-        has_memory = "metrics_memory" in context
+        
+        # 보정 로직 상세화
+        needs_ram = any(k in question for k in ["램", "ram", "메모리", "memory"])
+        needs_cpu = any(k in question for k in ["cpu", "시피유", "프로세서"])
+        needs_disk = any(k in question for k in ["디스크", "disk", "저장소"])
+        
+        has_ram = "metrics_memory" in context
         has_cpu = "metrics_cpu" in context
-        has_docker = "docker_metrics" in context
+        has_disk = "metrics_disk" in context
 
-        if (needs_ram and has_memory and needs_cpu and has_cpu) or (needs_docker and has_docker):
+        missing = []
+        if needs_ram and has_ram and "metrics_memory" not in current_sql:
+            missing.append("metrics_memory (RAM 지표)")
+        if needs_cpu and has_cpu and "metrics_cpu" not in current_sql:
+            missing.append("metrics_cpu (CPU 지표)")
+        if needs_disk and has_disk and "metrics_disk" not in current_sql:
+            missing.append("metrics_disk (디스크 지표)")
+
+        if missing:
             verdict = "SQL_BAD"
-            feedback = "필요한 테이블은 제공되었으나 SQL이 요구 지표를 포함하지 않습니다. 누락된 지표를 포함해 다시 작성하세요."
+            feedback = f"제공된 스키마에 {', '.join(missing)} 테이블이 존재함에도 쿼리에 포함되지 않았습니다. 반드시 해당 테이블을 사용하여 지표를 산출하세요."
 
     if verdict != "OK":
+        # 피드백을 [이유]와 [개선 예시]로 구조화하여 에이전트 전달
+        full_feedback = f"### 이전 시도 실패 원인\n{feedback}\n"
+        if hint:
+            full_feedback += f"\n### 올바른 쿼리 예시 및 힌트\n{hint}\n"
+            
         logger.info("TEXT_TO_SQL:validate_llm verdict=%s feedback=%s", verdict, feedback)
         return {
             "verdict": verdict,
-            "feedback_to_sql": feedback,
-            "validation_reason": feedback or "검증 실패",
+            "feedback_to_sql": full_feedback,
+            "validation_reason": feedback, # 요약된 이유
+            "failed_queries": failed_queries,
             "validation_retry_count": state.get("validation_retry_count", 0) + 1,
             "total_loops": state.get("total_loops", 0) + 1,
         }
 
-    logger.info("TEXT_TO_SQL:validate_llm verdict=OK")
+
     return {
         "verdict": "OK",
         "validation_reason": "",
@@ -570,6 +604,7 @@ async def generate_report(state: TextToSQLState) -> dict:
         HumanMessage(content=GENERATE_REPORT_USER.format(
             user_question=state.get("user_question", ""),
             result_status=state.get("result_status", "unknown"),
+            generated_sql=state.get("generated_sql", ""),
             sql_result=json.dumps(state.get("sql_result", [])[:20], ensure_ascii=False, indent=2),
             validation_reason=state.get("validation_reason", ""),
         )),
@@ -585,4 +620,6 @@ async def generate_report(state: TextToSQLState) -> dict:
     return {
         "report": report,
         "suggested_actions": suggested_actions,
+        "sql_result": state.get("sql_result", []),
+        "generated_sql": state.get("generated_sql", ""),
     }

@@ -157,5 +157,6 @@ async def run_text_to_sql(question: str) -> dict:
         "total_loops": 0,
         "verdict": "OK",
         "result_status": "unknown",
+        "failed_queries": [],
     }
     return await app.ainvoke(initial_state)

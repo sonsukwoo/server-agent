@@ -57,7 +57,8 @@ GENERATE_SQL_USER = """
 스키마 컨텍스트:
 {columns}
 
-추가 제약/피드백:
+이전 시도 기록 및 피드백 (반드시 검토하여 동일한 실수를 피하고 개선할 것):
+{failed_queries}
 {validation_reason}
 
 SQL만 출력하라.
@@ -66,16 +67,17 @@ SQL만 출력하라.
 VALIDATE_RESULT_SYSTEM = """
 너는 SQL 결과 검증기다. 아래 체크리스트로 엄격히 판단한다.
 체크리스트:
-1) 질문의 핵심 조건이 SQL에 반영되었는가?
-2) 질문이 요구한 지표가 모두 SQL 결과에 포함되는가?
-3) 포함된 테이블/컬럼이 스키마 컨텍스트에 존재하는가?
-4) 결과가 비어 있으면 '조건 불일치'인지 '데이터 부재'인지 구분했는가?
+1) 질문의 핵심 조건(시간 범위, 필터 등)이 SQL에 정확히 반영되었는가?
+2) 질문이 요구한 모든 지표(CPU, RAM 등)가 결과 컬럼에 포함되는가?
+3) 사용된 테이블/컬럼이 스키마 컨텍스트에 완벽히 존재하는가?
+4) 결과가 비어 있다면 왜 비어 있는지(조건이 너무 까다로운지 등) 분석하라.
 
-JSON만 출력한다.
+반드시 JSON만 출력한다.
 필드:
 - verdict: OK | SQL_BAD | TABLE_MISSING | DATA_MISSING | COLUMN_MISSING | AMBIGUOUS
-- feedback_to_sql: 재생성 시 참고할 짧은 피드백 (없으면 빈 문자열)
-- unnecessary_tables: 불필요하다고 판단되는 테이블 목록 (없으면 빈 배열)
+- feedback_to_sql: 재생성 시 참고할 '매우 구체적인' 실패 원인 분석.
+- correction_hint: 올바른 SQL 작성을 위한 '핵심 예제 조각' (예: 특정 JOIN 구문이나 필수 컬럼이 포함된 SELECT 문). 에이전트가 이 예제를 보고 즉시 따라할 수 있어야 함.
+- unnecessary_tables: 불필요하다고 판단되는 테이블 목록.
 """.strip()
 
 VALIDATE_RESULT_USER = """
@@ -95,12 +97,23 @@ SQL:
 """.strip()
 
 GENERATE_REPORT_SYSTEM = """
-너는 데이터 분석 보고서 작성기다. 결과를 간결하게 요약한다.
+너는 데이터 분석 보고서 작성기다. 아래 규칙을 엄격히 준수하여 보고서를 작성하라.
+
+규칙:
+1) **실행된 SQL**: '사용한 SQL 쿼리' 등의 제목 아래에 제공된 SQL을 코드 블록으로 반드시 포함하라.
+2) **결과 요약**: 결과 데이터의 핵심 수치와 트렌드만 요약하라.
+3) **샘플 데이터 표시 금지**: 결과 표(DataTable)는 UI가 별도로 제공하므로, 보고서 본문(텍스트)에 샘플 데이터를 나열하거나 텍스트 표를 만들지 마라.
+4) **결론 및 제안**: 데이터의 의미와 후속 작업을 명확히 제시하라.
 """.strip()
 
 GENERATE_REPORT_USER = """
 사용자 질문: {user_question}
 결과 상태: {result_status}
+
+실행된 SQL:
+```sql
+{generated_sql}
+```
 
 SQL 결과(샘플):
 {sql_result}

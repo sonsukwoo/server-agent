@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from src.agents.text_to_sql import run_text_to_sql
+from src.agents.text_to_sql import run_text_to_sql, app as sql_app
 from src.agents.mcp_clients.connector import postgres_client, qdrant_embeddings_client
 from src.agents.middleware.input_guard import InputGuard
 from config.settings import settings
@@ -211,10 +212,10 @@ def _write_hash_file(schema_hash: str) -> None:
         logger.warning("SCHEMA_EMBED: hash write failed: %s", e)
 
 
-@app.post("/query", response_model=QueryResponse)
+@app.post("/query")
 async def query(body: QueryRequest):
-    """자연어 질문을 받아서 처리"""
-    agent = body.agent.lower().strip()
+    """자연어 질문을 받아서 처리 (스트리밍 지원)"""
+    agent_type = body.agent.lower().strip()
     question = body.question.strip()
 
     # 1. 입력 검증
@@ -225,34 +226,83 @@ async def query(body: QueryRequest):
     if not is_valid:
         raise HTTPException(status_code=400, detail=error)
 
-    # 2. 에이전트 분기
-    if agent == "sql":
-        try:
-            result = await run_text_to_sql(question)
-            
-            # 최종 보고서 및 데이터 추출
-            report = result.get("report", "")
-            suggested_actions = result.get("suggested_actions", [])
-            
-            return QueryResponse(
-                ok=True,
-                agent="sql",
-                data={
-                    "report": report,
-                    "suggested_actions": suggested_actions,
-                    "raw": result  # 전체 로우 데이터 (디버깅용)
-                }
-            )
-        except Exception as e:
-            # 에이전트 실행 중 예외
-            raise HTTPException(status_code=500, detail=str(e))
+    # 노드 이름과 상태 메시지 매핑
+    node_messages = {
+        "parse_request": "사용자 질문 분석 중...",
+        "validate_request": "질문 유효성 검증 중...",
+        "retrieve_tables": "관련 테이블 검색 중...",
+        "select_tables": "조회에 필요한 테이블 선택 중...",
+        "generate_sql": "SQL 쿼리 생성 중...",
+        "guard_sql": "SQL 안전성 검사 중...",
+        "execute_sql": "데이터베이스 조회 중...",
+        "normalize_result": "조회 결과 정리 중...",
+        "validate_llm": "결과 정확성 검증 중...",
+        "expand_tables": "테이블 확장 검색 중...",
+        "generate_report": "최종 보고서 작성 중...",
+    }
 
-    elif agent == "ubuntu":
-        # 아직 미구현
-        raise HTTPException(status_code=501, detail="Ubuntu agent not implemented yet")
+    async def event_generator():
+        if agent_type == "sql":
+            initial_state = {
+                "user_question": question,
+                "sql_retry_count": 0,
+                "table_expand_count": 0,
+                "validation_retry_count": 0,
+                "total_loops": 0,
+                "verdict": "OK",
+                "result_status": "unknown",
+                "failed_queries": [],
+            }
+            
+            last_reason = ""
+            current_retry = 0
+            try:
+                # LangGraph astream 호출
+                async for event in sql_app.astream(initial_state):
+                    for node_name, output in event.items():
+                        # 상태 업데이트 추적
+                        if "validation_reason" in output:
+                            last_reason = output["validation_reason"]
+                        
+                        # 재시도 횟수 업데이트
+                        node_retry = output.get("sql_retry_count") or output.get("validation_retry_count")
+                        if node_retry is not None:
+                            current_retry = node_retry
+                        
+                        # 특정 노드가 시작되거나 완료될 때 상태 메시지 전송
+                        status_msg = node_messages.get(node_name)
+                        if status_msg:
+                            # 특수 케이스: generate_sql에서 재시도 중인 경우 상세 사유 포함
+                            if node_name == "generate_sql" and current_retry > 0:
+                                if last_reason:
+                                    # 사유를 짧게 요약하거나 그대로 표시 (사용자 요청: "로그에 나오듯 나오게")
+                                    status_msg = f"피드백 반영하여 SQL 재작성 중 (사유: {last_reason}) [재시도 {current_retry}]"
+                                else:
+                                    status_msg = f"오류 복구 및 SQL 재작성 중... [재시도 {current_retry}]"
+                            
+                            yield f"data: {json.dumps({'type': 'status', 'message': status_msg, 'node': node_name}, ensure_ascii=False)}\n\n"
+                        
+                        # 마지막 결과인 경우 전체 데이터 전송
+                        if node_name == "generate_report":
+                            final_data = {
+                                "ok": True,
+                                "agent": "sql",
+                                "data": {
+                                    "report": output.get("report", ""),
+                                    "suggested_actions": output.get("suggested_actions", []),
+                                    "raw": output
+                                }
+                            }
+                            yield f"data: {json.dumps({'type': 'result', 'payload': final_data}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                logger.error("STREAM_ERROR: %s", e)
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+        elif agent_type == "ubuntu":
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Ubuntu 에이전트는 아직 구현되지 않았습니다.'}, ensure_ascii=False)}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'지원하지 않는 에이전트 타입입니다: {agent_type}'}, ensure_ascii=False)}\n\n"
 
-    else:
-        raise HTTPException(status_code=400, detail="Invalid agent. Use 'sql' or 'ubuntu'.")
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get("/resource-summary")
 async def get_resource_summary():

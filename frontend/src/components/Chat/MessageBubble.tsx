@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { User, Bot } from 'lucide-react';
+import { User, Bot, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import { DataTable } from '../Common/DataTable';
 
 export interface MessageContent {
@@ -8,6 +8,7 @@ export interface MessageContent {
     text: string;
     sqlResult?: any[];
     isThinking?: boolean;
+    logs?: string[];
 }
 
 interface MessageBubbleProps {
@@ -15,6 +16,7 @@ interface MessageBubbleProps {
 }
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
+    const [isLogsOpen, setIsLogsOpen] = useState(false);
     const isAssistant = message.role === 'assistant';
 
     return (
@@ -32,6 +34,30 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
                                 <div className="markdown-body">
                                     <ReactMarkdown>{message.text}</ReactMarkdown>
                                 </div>
+
+                                {isAssistant && message.logs && message.logs.length > 0 && (
+                                    <div className="logs-container">
+                                        <button
+                                            className="logs-toggle"
+                                            onClick={() => setIsLogsOpen(!isLogsOpen)}
+                                        >
+                                            <Clock size={14} />
+                                            <span>작업 히스토리 {isLogsOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</span>
+                                        </button>
+
+                                        {isLogsOpen && (
+                                            <div className="logs-list">
+                                                {message.logs.map((log, idx) => (
+                                                    <div key={idx} className="log-item">
+                                                        <span className="log-dot">•</span>
+                                                        <span className="log-text">{log}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
                                 {message.sqlResult && message.sqlResult.length > 0 && (
                                     <DataTable data={message.sqlResult} />
                                 )}

@@ -1,14 +1,27 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Plus, MessageSquare, Bot } from 'lucide-react';
-import { MessageBubble, type MessageContent } from './MessageBubble';
+import { MessageBubble } from './MessageBubble';
 import { ApiClient } from '../../api/client';
 import { ResourceDashboard } from '../Dashboard/ResourceDashboard';
 
 export const ChatInterface: React.FC = () => {
-    const [messages, setMessages] = useState<MessageContent[]>([]);
-    const [input, setInput] = useState('');
+    const [messages, setMessages] = useState<any[]>([]);
+    const [inputValue, setInputValue] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [status, setStatus] = useState<string>('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    const adjustHeight = () => {
+        if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+            textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+        }
+    };
+
+    useEffect(() => {
+        adjustHeight();
+    }, [inputValue]);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -16,62 +29,50 @@ export const ChatInterface: React.FC = () => {
 
     useEffect(() => {
         scrollToBottom();
-    }, [messages]);
+    }, [messages, status]);
 
-    const handleSend = async () => {
-        if (!input.trim() || isLoading) return;
+    const handleSubmit = async (e?: React.FormEvent) => {
+        if (e) e.preventDefault();
+        if (!inputValue.trim() || isLoading) return;
 
-        const userQuestion = input.trim();
-        setInput('');
+        const userQuestion = inputValue.trim();
+        setInputValue('');
 
-        const newUserMessage: MessageContent = {
-            role: 'user',
-            text: userQuestion,
-        };
-
-        const thinkingMessage: MessageContent = {
-            role: 'assistant',
-            text: '',
-            isThinking: true,
-        };
-
-        setMessages((prev) => [...prev, newUserMessage, thinkingMessage]);
+        setMessages(prev => [...prev, { role: 'user', text: userQuestion }]);
         setIsLoading(true);
+        setStatus('사용자 질문 분석 중...');
+        const capturedLogs: string[] = ['사용자 질문 분석 중...'];
 
         try {
-            const result = await ApiClient.query(userQuestion);
+            const result = await ApiClient.query(userQuestion, (newStatus) => {
+                setStatus(newStatus);
+                if (capturedLogs[capturedLogs.length - 1] !== newStatus) {
+                    capturedLogs.push(newStatus);
+                }
+            });
 
-            setMessages((prev) => {
-                const withoutThinking = prev.slice(0, -1);
-                return [
-                    ...withoutThinking,
-                    {
-                        role: 'assistant',
-                        text: result.data?.report || '결과를 가져오지 못했습니다.',
-                        sqlResult: result.data?.raw?.sql_result || [],
-                    },
-                ];
-            });
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                text: result.data?.report || '',
+                sqlResult: result.data?.raw?.sql_result,
+                logs: [...capturedLogs]
+            }]);
         } catch (error) {
-            setMessages((prev) => {
-                const withoutThinking = prev.slice(0, -1);
-                return [
-                    ...withoutThinking,
-                    {
-                        role: 'assistant',
-                        text: `오류가 발생했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
-                    },
-                ];
-            });
+            console.error('Failed to query:', error);
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                text: `죄송합니다. 오류가 발생했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`
+            }]);
         } finally {
             setIsLoading(false);
+            setStatus('');
         }
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            handleSend();
+            handleSubmit();
         }
     };
 
@@ -105,27 +106,47 @@ export const ChatInterface: React.FC = () => {
                     ) : (
                         messages.map((msg, i) => <MessageBubble key={i} message={msg} />)
                     )}
+
+                    {isLoading && (
+                        <div className="message assistant thinking">
+                            <div className="chat-content">
+                                <div className="flex gap-4">
+                                    <div className="avatar">
+                                        <Bot size={20} color="#10a37f" />
+                                    </div>
+                                    <div className="message-content">
+                                        <div className="thinking-text">
+                                            {status}
+                                            <span className="dot-animation">...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     <div ref={messagesEndRef} />
                 </div>
 
                 <div className="input-container">
-                    <div className="input-wrapper">
+                    <form className="input-wrapper" onSubmit={handleSubmit}>
                         <textarea
+                            ref={textareaRef}
                             className="input-field"
                             placeholder="SQL 에이전트에게 질문하세요..."
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
+                            value={inputValue}
+                            onChange={(e) => setInputValue(e.target.value)}
                             onKeyDown={handleKeyDown}
                             rows={1}
                         />
                         <button
+                            type="submit"
                             className="send-button"
-                            onClick={handleSend}
-                            disabled={!input.trim() || isLoading}
+                            disabled={!inputValue.trim() || isLoading}
                         >
                             <Send size={16} />
                         </button>
-                    </div>
+                    </form>
                     <p style={{ textAlign: 'center', fontSize: '12px', color: 'var(--text-secondary)', marginTop: '12px' }}>
                         Text-to-SQL Agent can make mistakes. Check important info.
                     </p>
