@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection: str = "table_index"
-    enable_table_rerank: bool = True
 
     # Embeddings / Schema sync
     enable_schema_sync: bool = True

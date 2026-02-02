@@ -1,11 +1,8 @@
 """Text-to-SQL 에이전트 노드/미들웨어 (통합형)"""
 import json
-import os
 import re
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -21,129 +18,20 @@ from .prompts import (
     VALIDATE_RESULT_SYSTEM, VALIDATE_RESULT_USER,
     GENERATE_REPORT_SYSTEM, GENERATE_REPORT_USER,
 )
-
-load_dotenv(override=True)
-
-# ─────────────────────────────────────────
-# 기본 설정 (루프 가드 포함)
-# - RETRIEVE_K: 벡터 검색에서 확보할 후보 테이블 수
-# - TOP_K: LLM에게 제공할 초기 테이블 수
-# - EXPAND_STEP: TABLE_MISSING 발생 시 추가로 확장할 개수
-# - MAX_*: 각 루프/확장 제한
-# ─────────────────────────────────────────
-RETRIEVE_K = 15
-TOP_K = 5
-EXPAND_STEP = 5
-MAX_TABLE_EXPAND = 2
-MAX_SQL_RETRY = 2
-MAX_VALIDATION_RETRY = 1
-MAX_TOTAL_LOOPS = 5
-
-TIMEZONE = settings.tz
+from .constants import (
+    RETRIEVE_K, TOP_K, TIMEZONE
+)
+from .utils import (
+    get_current_time, get_now, parse_json_from_llm, normalize_sql,
+    build_table_context, rebuild_context_from_candidates,
+    classify_sql_error, next_batch, apply_elbow_cut
+)
 
 llm_fast = ChatOpenAI(model=settings.model_fast, temperature=0)
 llm_smart = ChatOpenAI(model=settings.model_smart, temperature=0)
 
-
-# ─────────────────────────────────────────
-# 유틸리티
-# - 시간 처리, JSON 파싱, SQL 안전 규칙, 에러 분류, 테이블 컨텍스트 구성
-# ─────────────────────────────────────────
-
-def get_current_time() -> str:
-    # 현재 시간을 ISO 8601 문자열로 반환
-    return datetime.now(ZoneInfo(TIMEZONE)).isoformat()
-
-
-def get_now() -> datetime:
-    # 현재 시간을 datetime 객체로 반환 (타임존 포함)
-    return datetime.now(ZoneInfo(TIMEZONE))
-
-
-def parse_json_from_llm(text: str) -> tuple[dict | None, str | None]:
-    # LLM 응답에서 JSON 블록을 안전하게 추출하고 파싱
-    try:
-        match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-        if match:
-            text = match.group(1)
-        return json.loads(text.strip()), None
-    except json.JSONDecodeError as e:
-        return None, f"JSON 파싱 실패: {e}. 원본: {text[:100]}..."
-
-
-def normalize_sql(sql: str) -> str:
-    # SQL 코드 블록 제거 및 안전 규칙 적용
-    sql = sql.strip()
-    match = re.search(r"```(?:sql)?\s*([\s\S]*?)```", sql)
-    if match:
-        sql = match.group(1).strip()
-
-    upper_sql = sql.upper()
-    if not (upper_sql.startswith("SELECT") or upper_sql.startswith("WITH")):
-        raise ValueError(f"SELECT 또는 WITH 쿼리만 허용됩니다. 받은 쿼리: {sql[:50]}...")
-
-    dangerous = ["DROP", "DELETE", "UPDATE", "INSERT", "TRUNCATE", "ALTER"]
-    for keyword in dangerous:
-        if keyword in upper_sql:
-            raise ValueError(f"위험한 키워드 포함: {keyword}")
-
-    # 다중 쿼리 차단 (세미콜론 중복 방지)
-    if ";" in sql.rstrip(";"):
-        raise ValueError("다중 쿼리는 허용되지 않습니다")
-
-    if "LIMIT" not in upper_sql:
-        sql = sql.rstrip(";") + " LIMIT 100"
-
-    return sql
-
-
-def build_table_context(selected: list[dict]) -> str:
-    # 선택된 테이블 목록을 LLM 프롬프트용 컨텍스트 문자열로 변환
-    blocks = []
-    for t in selected:
-        cols = t.get("columns", []) or []
-        columns_str = "\n".join([
-            f"- {c.get('name', '')} ({c.get('type', '')}): {c.get('description', 'N/A')}"
-            for c in cols
-        ])
-        join_keys = ", ".join(t.get("join_keys", []) or [])
-        primary_time_col = t.get("primary_time_col", "")
-        blocks.append(
-            f"테이블: {t['table_name']}\n"
-            f"설명: {t.get('description', '')}\n"
-            f"시간 컬럼: {primary_time_col}\n"
-            f"조인 키: {join_keys}\n\n"
-            f"컬럼:\n{columns_str}"
-        )
-    return "\n\n---\n\n".join(blocks)
-
-
-def classify_sql_error(sql_error: str) -> tuple[str, str]:
-    # SQL 에러 메시지를 규칙 기반으로 분류해 verdict/사유 반환
-    err = sql_error.lower()
-    if "relation" in err and "does not exist" in err:
-        return "TABLE_MISSING", "테이블이 존재하지 않습니다"
-    if "column" in err and "does not exist" in err:
-        return "COLUMN_MISSING", "컬럼이 존재하지 않습니다"
-    if "syntax error" in err or "at or near" in err:
-        return "SQL_BAD", "SQL 문법 오류"
-    if "permission denied" in err:
-        return "PERMISSION", "권한 문제"
-    if "invalid input syntax" in err or "cannot cast" in err:
-        return "TYPE_ERROR", "타입 변환 오류"
-    if "division by zero" in err:
-        return "SQL_BAD", "0으로 나누기 오류"
-    if "timeout" in err:
-        return "TIMEOUT", "쿼리 시간 초과"
-    if "could not connect" in err or "connection" in err:
-        return "DB_CONN_ERROR", "DB 연결 오류"
-    return "SQL_BAD", "알 수 없는 SQL 오류"
-
-
-def next_batch(candidates: list[dict], offset: int) -> list[dict]:
-    # 캐시된 후보 중 다음 확장 배치를 반환
-    end = min(len(candidates), offset + EXPAND_STEP)
-    return candidates[offset:end]
+# JSON Mode 강제 바인딩 (전역 생성)
+structured_llm_fast = llm_fast.bind(response_format={"type": "json_object"})
 
 
 # ─────────────────────────────────────────
@@ -161,14 +49,62 @@ async def parse_request(state: TextToSQLState) -> dict:
             user_question=state["user_question"],
         )),
     ]
-    response = await llm_fast.ainvoke(messages)
-    parsed, error = parse_json_from_llm(response.content)
-    if error:
+    
+    # 1) JSON Mode 적용 (전역 바인딩 객체 사용)
+    try:
+        response = await structured_llm_fast.ainvoke(messages)
+        # JSON Mode이므로 바로 json.loads 사용 (명확성)
+        parsed = json.loads(response.content)
+        error = None
+    except json.JSONDecodeError as e:
         return {
             "parsed_request": {},
             "is_request_valid": False,
-            "request_error": error,
+            "request_error": f"JSON 파싱 실패: {e}",
         }
+    except Exception as e:
+        # LLM 호출 자체 실패 시
+        return {
+            "parsed_request": {},
+            "is_request_valid": False,
+            "request_error": f"LLM 호출 실패: {str(e)}",
+        }
+
+    # 2) 타입 체크 (dict가 아닌 경우)
+    if not isinstance(parsed, dict):
+        return {
+            "parsed_request": {},
+            "is_request_valid": False,
+            "request_error": "LLM 응답이 JSON 객체(dict) 형식이 아닙니다",
+        }
+
+    # 3) 기본값 보정 로직
+    # Intent 처리
+    if not parsed.get("intent"):
+        parsed["intent"] = "unknown"
+
+    # Time Range 처리
+    time_range = parsed.get("time_range")
+    
+    # 4) time_range 구조 정규화
+    # None이거나 dict가 아니거나, 필수 키가 없는 경우 기본값(최근 6시간) 적용
+    is_valid_time_range = isinstance(time_range, dict) and time_range.get("start") and time_range.get("end")
+    
+    if not is_valid_time_range:
+        # 기본값: 최근 6시간
+        now = get_now()
+        start_dt = now - timedelta(hours=6)
+        parsed["time_range"] = {
+            "start": start_dt.isoformat(),
+            "end": now.isoformat(),
+            "timezone": TIMEZONE
+        }
+    else:
+        # Timezone 누락 시 보정
+        if not time_range.get("timezone"):
+            time_range["timezone"] = TIMEZONE
+            parsed["time_range"] = time_range
+
     return {"parsed_request": parsed}
 
 
@@ -242,7 +178,16 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
     user_question = state["user_question"]
     candidates = await search_related_tables(user_question, top_k=RETRIEVE_K)
 
-    if not candidates:
+    # 임시: 뷰(v_*) 테이블 제외
+    filtered = []
+    for c in candidates:
+        name = c.get("table_name", "")
+        base = name.split(".")[-1]
+        if base.startswith("v_"):
+            continue
+        filtered.append(c)
+
+    if not filtered:
         return {
             "table_candidates": [],
             "selected_tables": [],
@@ -251,7 +196,7 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
         }
 
     return {
-        "table_candidates": candidates,
+        "table_candidates": filtered,
         "candidate_offset": TOP_K,
     }
 
@@ -274,35 +219,45 @@ async def select_tables(state: TextToSQLState) -> dict:
             "request_error": "후보 테이블이 없습니다",
         }
 
-    if settings.enable_table_rerank:
-        candidates_str = ""
-        for i, c in enumerate(candidates, 1):
-            col_names = ", ".join([col.get("name", "") for col in c.get("columns", [])[:5]])
-            join_keys = ", ".join(c.get("join_keys", []) or [])
-            primary_time_col = c.get("primary_time_col", "")
-            candidates_str += (
-                f"{i}. {c['table_name']}\n"
-                f"   설명: {c.get('description', '')}\n"
-                f"   시간 컬럼: {primary_time_col}\n"
-                f"   조인 키: {join_keys}\n"
-                f"   주요 컬럼: {col_names}\n"
-                f"   유사도: {c.get('score', '')}\n\n"
-            )
+    candidates_str = ""
+    for i, c in enumerate(candidates, 1):
+        col_names = ", ".join([col.get("name", "") for col in c.get("columns", [])[:5]])
+        join_keys = ", ".join(c.get("join_keys", []) or [])
+        primary_time_col = c.get("primary_time_col", "")
+        candidates_str += (
+            f"{i}. {c['table_name']}\n"
+            f"   설명: {c.get('description', '')}\n"
+            f"   시간 컬럼: {primary_time_col}\n"
+            f"   조인 키: {join_keys}\n"
+            f"   주요 컬럼: {col_names}\n"
+            f"   유사도: {c.get('score', '')}\n\n"
+        )
 
-        messages = [
-            SystemMessage(content=RERANK_TABLE_SYSTEM),
-            HumanMessage(content=RERANK_TABLE_USER.format(
-                intent=parsed.get("intent", ""),
-                metric=parsed.get("metric", "N/A"),
-                condition=parsed.get("condition", "N/A"),
-                candidates=candidates_str,
-            )),
-        ]
-        response = await llm_fast.ainvoke(messages)
-        selected_idx_str = response.content.strip()
-        selected_indices = [int(n) for n in re.findall(r"\d+", selected_idx_str)]
-    else:
+    messages = [
+        SystemMessage(content=RERANK_TABLE_SYSTEM),
+        HumanMessage(content=RERANK_TABLE_USER.format(
+            intent=parsed.get("intent", ""),
+            metric=parsed.get("metric", "N/A"),
+            condition=parsed.get("condition", "N/A"),
+            candidates=candidates_str,
+        )),
+    ]
+    response = await llm_fast.ainvoke(messages)
+    parsed_json, error = parse_json_from_llm(response.content)
+    if error or not isinstance(parsed_json, list):
         selected_indices = list(range(1, min(TOP_K, len(candidates)) + 1))
+    else:
+        scored = []
+        for item in parsed_json:
+            try:
+                idx = int(item.get("index"))
+                score = float(item.get("score"))
+            except Exception:
+                continue
+            if 1 <= idx <= len(candidates):
+                scored.append({"index": idx, "score": score})
+        scored = apply_elbow_cut(scored)
+        selected_indices = [s["index"] for s in scored]
 
     if not selected_indices:
         return {
@@ -461,6 +416,24 @@ async def validate_llm(state: TextToSQLState) -> dict:
 
     verdict = parsed_json.get("verdict", "AMBIGUOUS")
     feedback = parsed_json.get("feedback_to_sql", "")
+    unnecessary = parsed_json.get("unnecessary_tables", []) or []
+
+    # 불필요 테이블 제거 요청이 있으면 목록 갱신 후 재생성 유도
+    if unnecessary:
+        current = list(state.get("selected_tables", []) or [])
+        filtered = [t for t in current if t not in unnecessary]
+        candidates = state.get("table_candidates", []) or []
+        _, new_context = rebuild_context_from_candidates(candidates, filtered)
+        if filtered:
+            return {
+                "selected_tables": filtered,
+                "table_context": new_context,
+                "verdict": "SQL_BAD",
+                "feedback_to_sql": "불필요 테이블을 제외하고 다시 작성하세요.",
+                "validation_reason": "불필요 테이블 제거 필요",
+                "validation_retry_count": state.get("validation_retry_count", 0) + 1,
+                "total_loops": state.get("total_loops", 0) + 1,
+            }
 
     # 스키마가 충분한데 결과가 빠진 경우 DATA_MISSING을 SQL_BAD로 보정
     if verdict == "DATA_MISSING":
@@ -490,6 +463,7 @@ async def validate_llm(state: TextToSQLState) -> dict:
     return {
         "verdict": "OK",
         "validation_reason": "",
+        "feedback_to_sql": "",
     }
 
 
