@@ -18,12 +18,8 @@ services:
       - MCP_POSTGRES_URL=http://mcp-postgres:8000
       - MCP_UBUNTU_URL=http://mcp-ubuntu:8000
       - MCP_QDRANT_URL=http://mcp-qdrant:8000
-
-      # Internal Paths
-      - MCP_SERVERS_DIR=/app/mcp_servers
     volumes:
       - ./backend:/app
-      - ./mcp_servers:/app/mcp_servers:ro
     networks:
       - agent-network
     extra_hosts:
