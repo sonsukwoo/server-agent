@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Plus, MessageSquare } from 'lucide-react';
+import { Send, Plus, MessageSquare, Bot } from 'lucide-react';
 import { MessageBubble, type MessageContent } from './MessageBubble';
 import { ApiClient } from '../../api/client';
+import { ResourceDashboard } from '../Dashboard/ResourceDashboard';
 
 export const ChatInterface: React.FC = () => {
     const [messages, setMessages] = useState<MessageContent[]>([]);
@@ -95,6 +96,7 @@ export const ChatInterface: React.FC = () => {
 
             <main className="main-area">
                 <div className="chat-container">
+                    <ResourceDashboard />
                     {messages.length === 0 ? (
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.5 }}>
                             <Bot size={48} style={{ marginBottom: '16px' }} />
@@ -132,5 +134,3 @@ export const ChatInterface: React.FC = () => {
         </div>
     );
 };
-
-import { Bot } from 'lucide-react';

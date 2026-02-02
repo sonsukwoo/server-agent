@@ -151,11 +151,11 @@ async def validate_request(state: TextToSQLState) -> dict:
                         "validation_reason": "시작 시간이 종료 시간보다 늦습니다",
                         "result_status": "error",
                     }
-                if end_dt > now:
+                if end_dt > now + timedelta(days=1):
                     return {
                         "is_request_valid": False,
-                        "request_error": "미래 데이터는 조회할 수 없습니다",
-                        "validation_reason": "미래 데이터는 조회할 수 없습니다",
+                        "request_error": "미래 데이터(내일 이후)는 조회할 수 없습니다",
+                        "validation_reason": "미래 데이터(내일 이후)는 조회할 수 없습니다",
                         "result_status": "error",
                     }
             except ValueError as e:

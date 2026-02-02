@@ -10,3 +10,4 @@ ENV/
 .env
 *.log
 .DS_Store
+.schema_hash

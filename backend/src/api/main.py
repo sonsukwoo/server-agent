@@ -61,7 +61,7 @@ async def sync_schema_embeddings_mcp() -> None:
       obj_description(c.oid, 'pg_class') AS description
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE c.relkind IN ('r','p')
+    WHERE c.relkind IN ('r','p','v')
       AND n.nspname NOT IN ('pg_catalog','information_schema')
     ORDER BY n.nspname, c.relname;
     """
@@ -78,7 +78,7 @@ async def sync_schema_embeddings_mcp() -> None:
     JOIN pg_namespace n ON c.relnamespace = n.oid
     WHERE a.attnum > 0
       AND NOT a.attisdropped
-      AND c.relkind IN ('r','p')
+      AND c.relkind IN ('r','p','v')
       AND n.nspname NOT IN ('pg_catalog','information_schema')
     ORDER BY n.nspname, c.relname, a.attnum;
     """
@@ -253,6 +253,32 @@ async def query(body: QueryRequest):
 
     else:
         raise HTTPException(status_code=400, detail="Invalid agent. Use 'sql' or 'ubuntu'.")
+
+@app.get("/resource-summary")
+async def get_resource_summary():
+    """ops_metrics.v_resource_summary 뷰에서 최근 리소스 사용량 요약을 가져옴"""
+    sql = "SELECT * FROM ops_metrics.v_resource_summary ORDER BY \"배치 ID\" DESC LIMIT 1"
+    try:
+        async with postgres_client() as client:
+            result_raw = await client.call_tool("execute_sql", {"query": sql})
+            logger.info("RESOURCE_SUMMARY: raw result from MCP: [%s]", result_raw)
+            
+            if not result_raw:
+                logger.warning("RESOURCE_SUMMARY: empty result from MCP")
+                return {}
+            
+            try:
+                result = json.loads(result_raw)
+            except json.JSONDecodeError as je:
+                logger.error("RESOURCE_SUMMARY: JSON decode error: %s | data: %s", je, result_raw)
+                return {}
+
+            if result and isinstance(result, list):
+                return result[0]
+            return {}
+    except Exception as e:
+        logger.error("RESOURCE_SUMMARY_TOTAL_ERROR: %s", e)
+        return {}
 
 if __name__ == "__main__":
     import uvicorn

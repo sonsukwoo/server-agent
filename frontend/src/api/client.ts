@@ -36,4 +36,12 @@ export class ApiClient {
 
         return response.json();
     }
+
+    static async getResourceSummary(): Promise<any> {
+        const response = await fetch(`${API_BASE_URL}/resource-summary`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch resource summary');
+        }
+        return response.json();
+    }
 }
