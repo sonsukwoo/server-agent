@@ -87,8 +87,9 @@ async def create_mcp_client(server_name: str):
         url_map = {
             "postgres": settings.mcp_postgres_url,
             "ubuntu": settings.mcp_ubuntu_url,
-            "qdrant/search": settings.mcp_qdrant_search_url,
-            "qdrant/embeddings": settings.mcp_qdrant_embeddings_url
+            "qdrant": settings.mcp_qdrant_url,
+            "qdrant/search": settings.mcp_qdrant_url,
+            "qdrant/embeddings": settings.mcp_qdrant_url,
         }
         base_url = url_map.get(server_name)
         if not base_url:
@@ -134,12 +135,12 @@ async def ubuntu_client():
 @asynccontextmanager
 async def qdrant_search_client():
     """Qdrant 검색 (Search) MCP 클라이언트"""
-    async with create_mcp_client("qdrant/search") as client:
+    async with create_mcp_client("qdrant") as client:
         yield client
 
 
 @asynccontextmanager
 async def qdrant_embeddings_client():
     """Qdrant 임베딩 (Embeddings) MCP 클라이언트"""
-    async with create_mcp_client("qdrant/embeddings") as client:
+    async with create_mcp_client("qdrant") as client:
         yield client

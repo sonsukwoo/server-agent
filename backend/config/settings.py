@@ -35,8 +35,7 @@ class Settings(BaseSettings):
     mcp_transport: str = "http"  # "stdio" or "http"
     mcp_postgres_url: str = "http://mcp-postgres:8000"
     mcp_ubuntu_url: str = "http://mcp-ubuntu:8000"
-    mcp_qdrant_search_url: str = "http://mcp-qdrant-search:8000"
-    mcp_qdrant_embeddings_url: str = "http://mcp-qdrant-embeddings:8000"
+    mcp_qdrant_url: str = "http://mcp-qdrant:8000"
     
     class Config:
         env_file = ".env"

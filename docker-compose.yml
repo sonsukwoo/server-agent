@@ -17,8 +17,7 @@ services:
       - MCP_TRANSPORT=http
       - MCP_POSTGRES_URL=http://mcp-postgres:8000
       - MCP_UBUNTU_URL=http://mcp-ubuntu:8000
-      - MCP_QDRANT_SEARCH_URL=http://mcp-qdrant-search:8000
-      - MCP_QDRANT_EMBEDDINGS_URL=http://mcp-qdrant-embeddings:8000
+      - MCP_QDRANT_URL=http://mcp-qdrant:8000
 
       # Internal Paths
       - MCP_SERVERS_DIR=/app/mcp_servers
@@ -34,9 +33,7 @@ services:
         condition: service_started
       mcp-ubuntu:
         condition: service_started
-      mcp-qdrant-search:
-        condition: service_started
-      mcp-qdrant-embeddings:
+      mcp-qdrant:
         condition: service_started
 
   # MCP - Postgres (containerized)
@@ -65,30 +62,16 @@ services:
     networks:
       - agent-network
 
-  # MCP - Qdrant Search
-  mcp-qdrant-search:
+  # MCP - Qdrant (Search + Embeddings)
+  mcp-qdrant:
     build:
-      context: ./mcp_servers/qdrant/search
+      context: ./mcp_servers/qdrant
       dockerfile: Dockerfile
-    container_name: mcp-qdrant-search
+    container_name: mcp-qdrant
     env_file:
       - ./backend/.env
     ports:
       - "9012:8000"
-    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
-    networks:
-      - agent-network
-
-  # MCP - Qdrant Embeddings
-  mcp-qdrant-embeddings:
-    build:
-      context: ./mcp_servers/qdrant/embeddings
-      dockerfile: Dockerfile
-    container_name: mcp-qdrant-embeddings
-    env_file:
-      - ./backend/.env
-    ports:
-      - "9013:8000"
     command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
     networks:
       - agent-network

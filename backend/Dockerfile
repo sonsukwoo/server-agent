@@ -19,13 +19,9 @@ RUN pip install --no-cache-dir -r mcp-postgres-reqs.txt
 COPY mcp_servers/ubuntu/requirements.txt mcp-ubuntu-reqs.txt
 RUN pip install --no-cache-dir -r mcp-ubuntu-reqs.txt
 
-# Qdrant Search MCP
-COPY mcp_servers/qdrant/search/requirements.txt mcp-qdrant-search-reqs.txt
-RUN pip install --no-cache-dir -r mcp-qdrant-search-reqs.txt
-
-# Qdrant Embeddings MCP
-COPY mcp_servers/qdrant/embeddings/requirements.txt mcp-qdrant-embeddings-reqs.txt
-RUN pip install --no-cache-dir -r mcp-qdrant-embeddings-reqs.txt
+# Qdrant MCP
+COPY mcp_servers/qdrant/requirements.txt mcp-qdrant-reqs.txt
+RUN pip install --no-cache-dir -r mcp-qdrant-reqs.txt
 
 # 애플리케이션 코드 복사 (backend 디렉토리 내용만)
 COPY backend/ .
