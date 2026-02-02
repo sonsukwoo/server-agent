@@ -4,8 +4,8 @@ services:
   # Backend Agent (Includes MCP Servers)
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: server-agent-backend
     env_file:
       - ./backend/.env
@@ -14,17 +14,84 @@ services:
     environment:
       # 추가적으로 덮어쓸 변수가 있다면 여기에 정의 (비워두거나 인입 경로 명시)
       - TZ=Asia/Seoul
+      - MCP_TRANSPORT=http
+      - MCP_POSTGRES_URL=http://mcp-postgres:8000
+      - MCP_UBUNTU_URL=http://mcp-ubuntu:8000
+      - MCP_QDRANT_SEARCH_URL=http://mcp-qdrant-search:8000
+      - MCP_QDRANT_EMBEDDINGS_URL=http://mcp-qdrant-embeddings:8000
 
       # Internal Paths
       - MCP_SERVERS_DIR=/app/mcp_servers
-      - SCHEMA_DIR=/app/schema
     volumes:
       - ./backend:/app
-      - ./backend/schema:/app/schema # Schema file persistence
+      - ./mcp_servers:/app/mcp_servers:ro
     networks:
       - agent-network
     extra_hosts:
       - "host.docker.internal:host-gateway" # Allow access to host DB
+    depends_on:
+      mcp-postgres:
+        condition: service_started
+      mcp-ubuntu:
+        condition: service_started
+      mcp-qdrant-search:
+        condition: service_started
+      mcp-qdrant-embeddings:
+        condition: service_started
+
+  # MCP - Postgres (containerized)
+  mcp-postgres:
+    build:
+      context: ./mcp_servers/postgres
+      dockerfile: Dockerfile
+    container_name: mcp-postgres
+    env_file:
+      - ./backend/.env
+    ports:
+      - "9010:8000"
+    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
+    networks:
+      - agent-network
+
+  # MCP - Ubuntu (containerized)
+  mcp-ubuntu:
+    build:
+      context: ./mcp_servers/ubuntu
+      dockerfile: Dockerfile
+    container_name: mcp-ubuntu
+    ports:
+      - "9011:8000"
+    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
+    networks:
+      - agent-network
+
+  # MCP - Qdrant Search
+  mcp-qdrant-search:
+    build:
+      context: ./mcp_servers/qdrant/search
+      dockerfile: Dockerfile
+    container_name: mcp-qdrant-search
+    env_file:
+      - ./backend/.env
+    ports:
+      - "9012:8000"
+    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
+    networks:
+      - agent-network
+
+  # MCP - Qdrant Embeddings
+  mcp-qdrant-embeddings:
+    build:
+      context: ./mcp_servers/qdrant/embeddings
+      dockerfile: Dockerfile
+    container_name: mcp-qdrant-embeddings
+    env_file:
+      - ./backend/.env
+    ports:
+      - "9013:8000"
+    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
+    networks:
+      - agent-network
 
 networks:
   agent-network:

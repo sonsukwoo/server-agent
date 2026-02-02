@@ -83,6 +83,31 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     else:
         return _error("알 수 없는 Tool입니다")
 
+# HTTP Adapter
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+import os
+
+http_app = FastAPI()
+
+@http_app.get("/tools")
+async def handle_list_tools():
+    tools = await list_tools()
+    return [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in tools]
+
+class CallToolRequest(BaseModel):
+    name: str
+    arguments: dict = {}
+
+@http_app.post("/call")
+async def handle_call_tool(req: CallToolRequest):
+    try:
+        result = await call_tool(req.name, req.arguments)
+        return [{"type": c.type, "text": c.text} for c in result]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 async def main():
     """MCP 서버 실행 (stdio)"""
     async with stdio_server() as (read, write):
@@ -90,4 +115,11 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
+    import sys
+    
+    # "http" 인자가 있으면 uvicorn 실행 (개발/테스트용)
+    if len(sys.argv) > 1 and sys.argv[1] == "http":
+        port = int(os.getenv("PORT", 8000))
+        uvicorn.run(http_app, host="0.0.0.0", port=port)
+    else:
+        asyncio.run(main())

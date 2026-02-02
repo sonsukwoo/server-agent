@@ -6,9 +6,11 @@ from datetime import datetime, timedelta
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
+import logging
 from config.settings import settings
-from src.agents.tools.qdrant_client import search_related_tables
-from src.agents.tools.connector import postgres_client
+from src.agents.mcp_clients.connector import postgres_client, qdrant_search_client
+
+logger = logging.getLogger("TEXT_TO_SQL")
 
 from .state import TextToSQLState
 from .prompts import (
@@ -42,6 +44,7 @@ async def parse_request(state: TextToSQLState) -> dict:
     # [역할] 사용자 자연어 질문을 구조화된 JSON으로 변환
     # [입력] user_question
     # [출력] parsed_request, is_request_valid/request_error(파싱 실패 시)
+    logger.info("TEXT_TO_SQL:parse_request start")
     messages = [
         SystemMessage(content=PARSE_REQUEST_SYSTEM),
         HumanMessage(content=PARSE_REQUEST_USER.format(
@@ -57,12 +60,14 @@ async def parse_request(state: TextToSQLState) -> dict:
         parsed = json.loads(response.content)
         error = None
     except json.JSONDecodeError as e:
+        logger.error("TEXT_TO_SQL:parse_request json_decode_error=%s", e)
         return {
             "parsed_request": {},
             "is_request_valid": False,
             "request_error": f"JSON 파싱 실패: {e}",
         }
     except Exception as e:
+        logger.error("TEXT_TO_SQL:parse_request llm_error=%s", e)
         # LLM 호출 자체 실패 시
         return {
             "parsed_request": {},
@@ -72,6 +77,7 @@ async def parse_request(state: TextToSQLState) -> dict:
 
     # 2) 타입 체크 (dict가 아닌 경우)
     if not isinstance(parsed, dict):
+        logger.error("TEXT_TO_SQL:parse_request invalid_type=%s", type(parsed))
         return {
             "parsed_request": {},
             "is_request_valid": False,
@@ -82,28 +88,6 @@ async def parse_request(state: TextToSQLState) -> dict:
     # Intent 처리
     if not parsed.get("intent"):
         parsed["intent"] = "unknown"
-
-    # Time Range 처리
-    time_range = parsed.get("time_range")
-    
-    # 4) time_range 구조 정규화
-    # None이거나 dict가 아니거나, 필수 키가 없는 경우 기본값(최근 6시간) 적용
-    is_valid_time_range = isinstance(time_range, dict) and time_range.get("start") and time_range.get("end")
-    
-    if not is_valid_time_range:
-        # 기본값: 최근 6시간
-        now = get_now()
-        start_dt = now - timedelta(hours=6)
-        parsed["time_range"] = {
-            "start": start_dt.isoformat(),
-            "end": now.isoformat(),
-            "timezone": TIMEZONE
-        }
-    else:
-        # Timezone 누락 시 보정
-        if not time_range.get("timezone"):
-            time_range["timezone"] = TIMEZONE
-            parsed["time_range"] = time_range
 
     return {"parsed_request": parsed}
 
@@ -116,6 +100,7 @@ async def validate_request(state: TextToSQLState) -> dict:
     # [역할] 파싱 결과의 기본 유효성/시간 범위를 검증
     # [입력] parsed_request
     # [출력] is_request_valid, request_error (실패 시 결과 상태 error로 전환)
+    logger.info("TEXT_TO_SQL:validate_request start")
     if state.get("is_request_valid") is False:
         return {
             "is_request_valid": False,
@@ -133,7 +118,24 @@ async def validate_request(state: TextToSQLState) -> dict:
             "result_status": "error",
         }
 
-    time_range = parsed.get("time_range", {})
+    # Time Range 보정 (누락/불완전 시 기본값 6시간)
+    time_range = parsed.get("time_range")
+    is_valid_time_range = isinstance(time_range, dict) and time_range.get("start") and time_range.get("end")
+
+    if not is_valid_time_range:
+        now = get_now()
+        start_dt = now - timedelta(hours=6)
+        time_range = {
+            "start": start_dt.isoformat(),
+            "end": now.isoformat(),
+            "timezone": TIMEZONE
+        }
+        parsed["time_range"] = time_range
+    else:
+        if not time_range.get("timezone"):
+            time_range["timezone"] = TIMEZONE
+            parsed["time_range"] = time_range
+
     if time_range:
         start = time_range.get("start")
         end = time_range.get("end")
@@ -149,7 +151,7 @@ async def validate_request(state: TextToSQLState) -> dict:
                         "validation_reason": "시작 시간이 종료 시간보다 늦습니다",
                         "result_status": "error",
                     }
-                if end_dt > now + timedelta(hours=1):
+                if end_dt > now:
                     return {
                         "is_request_valid": False,
                         "request_error": "미래 데이터는 조회할 수 없습니다",
@@ -164,7 +166,16 @@ async def validate_request(state: TextToSQLState) -> dict:
                     "result_status": "error",
                 }
 
-    return {"is_request_valid": True, "request_error": ""}
+    logger.info(
+        "TEXT_TO_SQL:validate_request ok start=%s end=%s",
+        time_range.get("start") if time_range else None,
+        time_range.get("end") if time_range else None,
+    )
+    return {
+        "parsed_request": parsed,
+        "is_request_valid": True,
+        "request_error": ""
+    }
 
 
 # ─────────────────────────────────────────
@@ -176,9 +187,37 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
     # [입력] user_question
     # [출력] table_candidates, candidate_offset
     user_question = state["user_question"]
-    candidates = await search_related_tables(user_question, top_k=RETRIEVE_K)
+    
+    # Qdrant MCP 호출
+    candidates = []
+    try:
+        async with qdrant_search_client() as client:
+            result_json = await client.call_tool("search_tables", {
+                "query": user_question,
+                "top_k": RETRIEVE_K
+            })
+            if result_json:
+                try:
+                    candidates = json.loads(result_json)
+                    logger.info(
+                        "Qdrant MCP search_tables OK: query_len=%s top_k=%s candidates=%s",
+                        len(user_question),
+                        RETRIEVE_K,
+                        len(candidates) if isinstance(candidates, list) else "non-list",
+                    )
+                except json.JSONDecodeError as e:
+                    logger.error(f"Qdrant MCP JSON Parsing Error: {e}, Content: {result_json[:100]}...")
+                    candidates = []
+                except Exception as e:
+                    # 기타 예상치 못한 파싱 에러
+                    logger.error(f"Qdrant MCP Parsing Unknown Error: {e}")
+                    candidates = []
+    except Exception as e:
+        # MCP 호출 실패 시 로그 혹은 에러 처리 (여기서는 빈 리스트로 진행하여 폴백 유도)
+        logger.error(f"Qdrant MCP Tool Call Error: {e}")
+        candidates = []
 
-    # 임시: 뷰(v_*) 테이블 제외
+    # TEMP: view 제외 (추후 제거 예정)
     filtered = []
     for c in candidates:
         name = c.get("table_name", "")
@@ -294,6 +333,12 @@ async def generate_sql(state: TextToSQLState) -> dict:
 
     validation_reason = state.get("feedback_to_sql") or state.get("validation_reason") or "없음"
 
+    logger.info(
+        "TEXT_TO_SQL:generate_sql start sql_retry_count=%s validation_retry_count=%s total_loops=%s",
+        state.get("sql_retry_count", 0),
+        state.get("validation_retry_count", 0),
+        state.get("total_loops", 0),
+    )
     messages = [
         SystemMessage(content=GENERATE_SQL_SYSTEM),
         HumanMessage(content=GENERATE_SQL_USER.format(
@@ -309,6 +354,7 @@ async def generate_sql(state: TextToSQLState) -> dict:
     ]
 
     response = await llm_smart.ainvoke(messages)
+    logger.info("TEXT_TO_SQL:generate_sql done")
     return {"generated_sql": response.content.strip(), "sql_guard_error": ""}
 
 
@@ -324,6 +370,7 @@ async def guard_sql(state: TextToSQLState) -> dict:
         sql = normalize_sql(state.get("generated_sql", ""))
         return {"generated_sql": sql, "sql_guard_error": ""}
     except Exception as e:
+        logger.error("TEXT_TO_SQL:guard_sql error=%s", e)
         return {
             "sql_guard_error": str(e),
             "sql_retry_count": state.get("sql_retry_count", 0) + 1,
@@ -340,12 +387,18 @@ async def execute_sql(state: TextToSQLState) -> dict:
     # [입력] generated_sql
     # [출력] sql_result, sql_error
     sql = state.get("generated_sql", "")
+    logger.info("TEXT_TO_SQL:execute_sql start")
     try:
         async with postgres_client() as client:
             result = await client.call_tool("execute_sql", {"query": sql})
             sql_result = json.loads(result)
+        logger.info(
+            "TEXT_TO_SQL:execute_sql ok rows=%s",
+            len(sql_result) if isinstance(sql_result, list) else "non-list",
+        )
         return {"sql_result": sql_result, "sql_error": ""}
     except Exception as e:
+        logger.error("TEXT_TO_SQL:execute_sql error=%s", e)
         return {"sql_result": [], "sql_error": str(e)}
 
 
@@ -360,6 +413,7 @@ async def normalize_result(state: TextToSQLState) -> dict:
     sql_error = state.get("sql_error")
     if sql_error:
         verdict, reason = classify_sql_error(sql_error)
+        logger.error("TEXT_TO_SQL:normalize_result sql_error=%s verdict=%s", sql_error, verdict)
         return {
             "result_status": "error",
             "verdict": verdict,
@@ -369,6 +423,7 @@ async def normalize_result(state: TextToSQLState) -> dict:
         }
 
     if not state.get("sql_result"):
+        logger.info("TEXT_TO_SQL:normalize_result empty_result")
         return {
             "result_status": "empty",
         }
@@ -407,6 +462,7 @@ async def validate_llm(state: TextToSQLState) -> dict:
     parsed_json, error = parse_json_from_llm(response.content)
 
     if error or not parsed_json:
+        logger.error("TEXT_TO_SQL:validate_llm parse_error=%s", error)
         # 파싱 실패 시 단순 폴백
         verdict = "OK" if state.get("sql_result") else "DATA_MISSING"
         return {
@@ -425,6 +481,7 @@ async def validate_llm(state: TextToSQLState) -> dict:
         candidates = state.get("table_candidates", []) or []
         _, new_context = rebuild_context_from_candidates(candidates, filtered)
         if filtered:
+            logger.info("TEXT_TO_SQL:validate_llm unnecessary_tables=%s", unnecessary)
             return {
                 "selected_tables": filtered,
                 "table_context": new_context,
@@ -452,6 +509,7 @@ async def validate_llm(state: TextToSQLState) -> dict:
             feedback = "필요한 테이블은 제공되었으나 SQL이 요구 지표를 포함하지 않습니다. 누락된 지표를 포함해 다시 작성하세요."
 
     if verdict != "OK":
+        logger.info("TEXT_TO_SQL:validate_llm verdict=%s feedback=%s", verdict, feedback)
         return {
             "verdict": verdict,
             "feedback_to_sql": feedback,
@@ -460,6 +518,7 @@ async def validate_llm(state: TextToSQLState) -> dict:
             "total_loops": state.get("total_loops", 0) + 1,
         }
 
+    logger.info("TEXT_TO_SQL:validate_llm verdict=OK")
     return {
         "verdict": "OK",
         "validation_reason": "",
