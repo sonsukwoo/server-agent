@@ -674,23 +674,67 @@ async def guard_sql(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 
 async def execute_sql(state: TextToSQLState) -> dict:
-    # [역할] MCP 도구를 통해 SQL 실행
+    # [역할] MCP 도구를 통해 SQL 실행 (Refactored)
     # [입력] generated_sql
-    # [출력] sql_result, sql_error
-    sql = state.get("generated_sql", "")
+    # [출력] sql_result, sql_error, raw_sql_result(디버깅용)
+    
+    current_sql = state.get("generated_sql", "").strip()
     logger.info("TEXT_TO_SQL:execute_sql start")
+
+    # 1. SQL 유효성 체크
+    if not current_sql:
+        logger.warning("TEXT_TO_SQL:execute_sql empty_sql")
+        return {
+            "sql_result": [],
+            "sql_error": "SQL이 비어있음",
+            "raw_sql_result": ""
+        }
+
+    raw_sql_result = ""
+    sql_result = []
+    
     try:
+        # 2. MCP 호출
         async with postgres_client() as client:
-            result = await client.call_tool("execute_sql", {"query": sql})
-            sql_result = json.loads(result)
-        logger.info(
-            "TEXT_TO_SQL:execute_sql ok rows=%s",
-            len(sql_result) if isinstance(sql_result, list) else "non-list",
-        )
-        return {"sql_result": sql_result, "sql_error": ""}
+            raw_sql_result = await client.call_tool("execute_sql", {"query": current_sql})
+
+        # 3. JSON 파싱
+        # MCP 응답은 문자열 형태의 JSON으로 가정
+        try:
+           sql_result = json.loads(raw_sql_result)
+        except json.JSONDecodeError as e:
+            logger.error(f"TEXT_TO_SQL:execute_sql parse_fail raw={raw_sql_result[:100]}... error={e}")
+            return {
+                "sql_result": [],
+                "sql_error": "JSON 파싱 실패",
+                "raw_sql_result": raw_sql_result
+            }
+
+        # 4. 타입 검증 (List 여부)
+        if not isinstance(sql_result, list):
+            logger.error(f"TEXT_TO_SQL:execute_sql type_fail type={type(sql_result)}")
+            return {
+                "sql_result": [],
+                "sql_error": "결과 형식 오류 (List가 아님)",
+                "raw_sql_result": raw_sql_result
+            }
+
+        # 5. 성공
+        logger.info(f"TEXT_TO_SQL:execute_sql success rows={len(sql_result)}")
+        return {
+            "sql_result": sql_result,
+            "sql_error": "",
+            "raw_sql_result": raw_sql_result
+        }
+
     except Exception as e:
-        logger.error("TEXT_TO_SQL:execute_sql error=%s", e)
-        return {"sql_result": [], "sql_error": str(e)}
+        # MCP 호출 자체 에러 등
+        logger.error(f"TEXT_TO_SQL:execute_sql mcp_error={e}")
+        return {
+            "sql_result": [],
+            "sql_error": str(e),
+            "raw_sql_result": raw_sql_result
+        }
 
 
 # ─────────────────────────────────────────

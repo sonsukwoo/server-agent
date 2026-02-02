@@ -57,6 +57,7 @@ class TextToSQLState(TypedDict, total=False):
     sql_guard_error: str
     sql_result: list[dict]
     sql_error: str
+    raw_sql_result: str  # 디버깅용 (MCP 응답 원본)
 
     # 결과/검증
     result_status: str  # ok | empty | error
