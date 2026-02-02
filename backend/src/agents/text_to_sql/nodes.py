@@ -2,6 +2,8 @@
 import json
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import dateparser
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -28,6 +30,7 @@ from .utils import (
     build_table_context, rebuild_context_from_candidates,
     classify_sql_error, next_batch, apply_elbow_cut
 )
+from .middleware.output_guard import SqlOutputGuard
 
 llm_fast = ChatOpenAI(model=settings.model_fast, temperature=0)
 llm_smart = ChatOpenAI(model=settings.model_smart, temperature=0)
@@ -96,11 +99,147 @@ async def parse_request(state: TextToSQLState) -> dict:
 # Node 2: validate_request
 # ─────────────────────────────────────────
 
+def _extract_time_from_question(question: str) -> dict | None:
+    """
+    질문 원문에서 dateparser/regex를 사용하여 시간 범위를 추출
+    :param question: 사용자 질문
+    :return: {"start": ISO, "end": ISO, "timezone": ...} or None
+    """
+    if not question:
+        return None
+
+    now = get_now()
+    
+    # 1. 날짜 앵커 (오늘, 어제 등) 파싱
+    #    시간 정보 없이 날짜만 인식하도록 유도하기 위해 우선 dateparser 사용
+    #    단, '1시' 같은 시간을 날짜로 오인하지 않도록 주의가 필요하나, 
+    #    dateparser 설정을 통해 '어제', '오늘' 위주로 인식 시도
+    date_settings = {
+        'TIMEZONE': TIMEZONE,
+        'RETURN_AS_TIMEZONE_AWARE': True,
+        'RELATIVE_BASE': now,
+        'PREFER_DATES_FROM': 'past'
+    }
+    
+    # 날짜 기준점 (Default: 오늘)
+    base_date = now.date()
+    
+    # 질문에서 '어제', '두시간 전' 같은 앵커가 있는지 확인
+    # dateparser는 문장 전체를 넣으면 시간을 포함해서 해석해버리므로,
+    # 우선 '날짜'만 특정할 수 있는 키워드가 있는지 보거나, 
+    # 혹은 dateparser가 해석한 결과의 .date()를 기준점으로 삼음.
+    try:
+        parsed_anchor = dateparser.parse(question, settings=date_settings, languages=['ko'])
+        if parsed_anchor:
+            base_date = parsed_anchor.date()
+    except:
+        pass
+
+    # 2. Regex로 시간 범위(N시~M시) 추출
+    #    패턴: (오전/오후)? N시 (분)? ~ (오전/오후)? M시 (분)?
+    #    매우 다양한 케이스가 있으나, 핵심적인 "N시~M시" 위주로 처리
+    
+    # 예: "13:00~15:00", "1시부터 3시", "오후 1시~3시"
+    range_pattern = re.compile(r"(오전|오후)?\s*(\d{1,2})(?:시|:)(\d{2})?\s*(?:~|-|부터|에서)\s*(오전|오후)?\s*(\d{1,2})(?:시|:)(\d{2})?")
+    
+    match = range_pattern.search(question)
+    
+    if match:
+        # 그룹: 1(ampm1), 2(h1), 3(m1), 4(ampm2), 5(h2), 6(m2)
+        ampm1, h1, m1, ampm2, h2, m2 = match.groups()
+        
+        def to_24hr(ampm, h, m):
+            h = int(h)
+            m = int(m) if m else 0
+            if ampm == "오후" and h < 12: h += 12
+            if ampm == "오전" and h == 12: h = 0
+            # 뒤쪽만 '오후'가 있고 앞쪽은 없을 때 (예: 1~오후3시) -> 앞쪽도 오후로 간주해야 할까?
+            # 보통 "1~3시" 하면 13~15시인 경우가 많음 (로그 조회 등). 
+            # 하지만 "오전 9~11시" 일수도 있음.
+            # 여기서는 명시된 것만 처리하고, 컨텍스트 부재 시 12 미만은 +12 할지 여부는 복잡함.
+            # 일단 명시된 대로 처리.
+            return h, m
+
+        # 뒤쪽 Ampm이 있고 앞쪽이 없으면, 앞쪽도 같은 Ampm으로 추론? (예: "1시~오후3시")
+        # 반대는? "오후 1시~3시" -> 뒤도 오후.
+        if ampm1 and not ampm2: ampm2 = ampm1
+        # 앞쪽이 없고 뒤쪽이 오후면 -> 앞쪽도 오후일 확률 높음 (1시~오후3시 -> 13~15)
+        # 하지만 "11시~오후1시" (11~13) 일수도 있음.
+        # 심플 룰: "오후"가 한번이라도 등장하면, 그리고 숫자가 작으면 오후로 매핑? -> 위험함.
+        # 우선 명시된 것 기준. (단, "오후 1~3시" 처럼 묶인 경우 ampm1이 적용됨)
+
+        h1_val, m1_val = to_24hr(ampm1, h1, m1)
+        h2_val, m2_val = to_24hr(ampm2, h2, m2)
+        
+        # 만약 "오후 1~3시" 패턴이라면 (Regex가 "오후 1시"만 잡고 "~3시"를 잡았을 때)
+        # 위 Regex 구조상 ampm1이 '오후'면 h1 적용. 
+        # ampm2가 없으면 None -> h2는 그대로.
+        # "오후 1시~3시" -> ampm1='오후', h1=1, ampm2=None, h2=3
+        # 이 경우 h2도 오후여야 자연스러움 (13~15). 
+        # 로직 추가: ampm1이 있고 ampm2가 없는데, h1 >= h2 인 경우(11~1)가 아니라 h1 < h2 인 경우(1~3)
+        # 보통 같은 대역.
+        if ampm1 and not ampm2:
+            # 앞이 오후인데 뒤가 오전범위(12미만)면 뒤도 오후로 보정
+            if h2_val < 12:
+                h2_val += 12 if ampm1 == "오후" else 0
+
+        # timezone aware datetime 생성
+        tz = getattr(now, 'tzinfo', None) or ZoneInfo(TIMEZONE)
+        
+        try:
+            start_dt = datetime.combine(base_date, datetime.min.time(), tzinfo=tz).replace(hour=h1_val, minute=m1_val)
+            end_dt = datetime.combine(base_date, datetime.min.time(), tzinfo=tz).replace(hour=h2_val, minute=m2_val)
+            
+            return {
+                "start": start_dt.isoformat(),
+                "end": end_dt.isoformat(),
+                "timezone": TIMEZONE
+            }
+        except ValueError:
+            pass # 시간 변환 실패 (25시 등)
+
+    # 3. Regex 실패 시 dateparser 전체 파싱 (기존 로직)
+    #    단, "오늘", "어제" 같은 단일 날짜 표현 처리를 위해 필요
+    try:
+        dt = dateparser.parse(question, settings=date_settings, languages=['ko', 'en'])
+        if dt:
+             if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=now.tzinfo)
+             
+             # 파싱된 날짜가 '오늘'인 경우: 00:00 ~ 현재
+             if dt.date() == now.date():
+                return {
+                    "start": dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(),
+                    "end": now.isoformat(),
+                    "timezone": TIMEZONE
+                }
+             # 과거 날짜: 00:00 ~ 23:59:59
+             elif dt < now:
+                end_of_day = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+                return {
+                    "start": dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(),
+                    "end": end_of_day.isoformat(),
+                    "timezone": TIMEZONE
+                }
+             # 미래 (그대로 반환 -> Validate에서 차단)
+             return {
+                 "start": dt.replace(hour=0, minute=0, second=0).isoformat(),
+                 "end": dt.replace(hour=23, minute=59, second=59).isoformat(),
+                 "timezone": TIMEZONE
+             }
+    except:
+        pass
+
+    return None
+
+
 async def validate_request(state: TextToSQLState) -> dict:
-    # [역할] 파싱 결과의 기본 유효성/시간 범위를 검증
-    # [입력] parsed_request
+    # [역할] 파싱 결과의 기본 유효성/시간 범위를 검증 및 보정 (심화 로직)
+    # [입력] parsed_request, user_question
     # [출력] is_request_valid, request_error (실패 시 결과 상태 error로 전환)
+    
     logger.info("TEXT_TO_SQL:validate_request start")
+    
     if state.get("is_request_valid") is False:
         return {
             "is_request_valid": False,
@@ -118,59 +257,102 @@ async def validate_request(state: TextToSQLState) -> dict:
             "result_status": "error",
         }
 
-    # Time Range 보정 (누락/불완전 시 기본값 6시간)
-    time_range = parsed.get("time_range")
-    is_valid_time_range = isinstance(time_range, dict) and time_range.get("start") and time_range.get("end")
+    # 2. 시간 범위 확정 로직 (우선순위 변경)
+    # Priority 1: 질문 원문 기계적 추출 (_extract_time_from_question)
+    # Priority 2: LLM이 파싱한 값 (parsed_request["time_range"])
+    # Priority 3: Fallback (최근 6시간)
+    
+    final_time_range = None
+    
+    # (1) 질문 원문 분석
+    extracted = _extract_time_from_question(state.get("user_question", ""))
+    if extracted:
+        logger.info("TEXT_TO_SQL:validate_request time extracted from question: %s", extracted)
+        final_time_range = extracted
+        
+    # (2) 없으면 LLM 파싱 값 사용
+    if not final_time_range:
+        llm_tr = parsed.get("time_range")
+        if isinstance(llm_tr, dict) and llm_tr.get("start") and llm_tr.get("end"):
+            final_time_range = llm_tr
+            if not final_time_range.get("timezone"):
+                final_time_range["timezone"] = TIMEZONE
 
-    if not is_valid_time_range:
+    # (3) 그래도 없으면 Fallback
+    if not final_time_range:
         now = get_now()
         start_dt = now - timedelta(hours=6)
-        time_range = {
+        final_time_range = {
             "start": start_dt.isoformat(),
             "end": now.isoformat(),
             "timezone": TIMEZONE
         }
-        parsed["time_range"] = time_range
-    else:
-        if not time_range.get("timezone"):
-            time_range["timezone"] = TIMEZONE
-            parsed["time_range"] = time_range
+        logger.info("TEXT_TO_SQL:validate_request fallback time applied (last 6h)")
 
-    if time_range:
-        start = time_range.get("start")
-        end = time_range.get("end")
-        if start and end:
-            try:
-                start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
-                now = get_now().replace(tzinfo=end_dt.tzinfo)
-                if start_dt > end_dt:
-                    return {
-                        "is_request_valid": False,
-                        "request_error": "시작 시간이 종료 시간보다 늦습니다",
-                        "validation_reason": "시작 시간이 종료 시간보다 늦습니다",
-                        "result_status": "error",
-                    }
-                if end_dt > now + timedelta(days=1):
-                    return {
-                        "is_request_valid": False,
-                        "request_error": "미래 데이터(내일 이후)는 조회할 수 없습니다",
-                        "validation_reason": "미래 데이터(내일 이후)는 조회할 수 없습니다",
-                        "result_status": "error",
-                    }
-            except ValueError as e:
-                return {
-                    "is_request_valid": False,
-                    "request_error": f"시간 형식 오류: {e}",
-                    "validation_reason": f"시간 형식 오류: {e}",
-                    "result_status": "error",
-                }
+    # 3. 유효성 검증 (미래 차단 & 역전 방지)
+    start_str = final_time_range.get("start")
+    end_str = final_time_range.get("end")
+    
+    try:
+        settings = {'TIMEZONE': TIMEZONE, 'RETURN_AS_TIMEZONE_AWARE': True}
+        start_dt = dateparser.parse(str(start_str), settings=settings)
+        end_dt = dateparser.parse(str(end_str), settings=settings)
+        now = get_now()
 
+        # 타임존 보정
+        if start_dt and start_dt.tzinfo is None: start_dt = start_dt.replace(tzinfo=now.tzinfo)
+        if end_dt and end_dt.tzinfo is None: end_dt = end_dt.replace(tzinfo=now.tzinfo)
+        
+        if not start_dt or not end_dt:
+             raise ValueError("Time format invalid")
+
+        # 3-1) 미래 차단
+        if start_dt > now + timedelta(minutes=1): 
+             return {
+                "is_request_valid": False,
+                "request_error": f"미래 데이터(시작: {start_str})는 조회할 수 없습니다.",
+                "validation_reason": "Future start time",
+                "result_status": "error",
+            }
+        
+        if end_dt > now + timedelta(minutes=5):
+             return {
+                "is_request_valid": False,
+                "request_error": f"미래 데이터(종료: {end_str})는 조회할 수 없습니다.",
+                "validation_reason": "Future end time",
+                "result_status": "error",
+            }
+
+        # 3-2) 역전 검사
+        if start_dt > end_dt:
+             return {
+                "is_request_valid": False,
+                "request_error": "시작 시간이 종료 시간보다 늦습니다.",
+                "validation_reason": "Start > End",
+                "result_status": "error",
+            }
+
+        # 재포맷팅
+        final_time_range["start"] = start_dt.isoformat()
+        final_time_range["end"] = end_dt.isoformat()
+
+    except Exception as e:
+        return {
+            "is_request_valid": False,
+            "request_error": f"시간 유효성 검증 실패: {e}",
+            "validation_reason": f"Time validation failed: {e}",
+            "result_status": "error",
+        }
+
+    # 결과 적용
+    parsed["time_range"] = final_time_range
+    
     logger.info(
         "TEXT_TO_SQL:validate_request ok start=%s end=%s",
-        time_range.get("start") if time_range else None,
-        time_range.get("end") if time_range else None,
+        final_time_range.get("start"),
+        final_time_range.get("end"),
     )
+    
     return {
         "parsed_request": parsed,
         "is_request_valid": True,
@@ -477,20 +659,44 @@ async def generate_sql(state: TextToSQLState) -> dict:
 # Node 6: guard_sql
 # ─────────────────────────────────────────
 
+# 전역 싱글톤 가드 인스턴스
+sql_guard = SqlOutputGuard()
+
 async def guard_sql(state: TextToSQLState) -> dict:
-    # [역할] 생성된 SQL의 안전 규칙 검사/보정
+    # [역할] generated_sql 정규화 + OutputGuard 안전성 검사
     # [입력] generated_sql
-    # [출력] generated_sql(정규화), sql_guard_error(실패 시)
-    try:
-        sql = normalize_sql(state.get("generated_sql", ""))
-        return {"generated_sql": sql, "sql_guard_error": ""}
-    except Exception as e:
-        logger.error("TEXT_TO_SQL:guard_sql error=%s", e)
+    # [출력] generated_sql (normalized) or sql_guard_error
+    
+    current_sql = state.get("generated_sql", "")
+    
+    # 1. 빈 SQL 체크
+    if not current_sql:
+        logger.warning("TEXT_TO_SQL:guard_sql blocked: SQL is empty")
         return {
-            "sql_guard_error": str(e),
+            "generated_sql": "",
+            "sql_guard_error": "SQL이 비어있습니다",
             "sql_retry_count": state.get("sql_retry_count", 0) + 1,
             "total_loops": state.get("total_loops", 0) + 1,
         }
+
+    # 2. 가드 검증 (싱글톤 사용)
+    is_valid, result_or_error = sql_guard.validate_sql(current_sql)
+    
+    if not is_valid:
+        logger.warning(f"TEXT_TO_SQL:guard_sql blocked: {result_or_error}")
+        return {
+            "generated_sql": current_sql, # 원본 유지 (디버깅용)
+            "sql_guard_error": result_or_error,
+            "sql_retry_count": state.get("sql_retry_count", 0) + 1,
+            "total_loops": state.get("total_loops", 0) + 1,
+        }
+
+    # Pass
+    logger.info("TEXT_TO_SQL:guard_sql passed")
+    return {
+        "generated_sql": result_or_error, # 정규화된 SQL
+        "sql_guard_error": ""
+    }
 
 
 # ─────────────────────────────────────────

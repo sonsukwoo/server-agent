@@ -24,3 +24,4 @@ guardrails-ai>=0.4.0
 # 유틸
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
+dateparser>=1.2.0
