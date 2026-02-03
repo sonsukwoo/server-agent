@@ -20,28 +20,13 @@ LangGraph + HTTP MCP + Qdrant 기반의 AI 에이전트 시스템입니다.
 
 ## 🏗️ 아키텍처
 
+### 1. 시스템 아키텍처 (System Architecture)
+
 ```mermaid
 graph TD
     User[User] -->|Query| API["Server Agent API (FastAPI)"]
     API -->|Run Graph| Agent["Text-to-SQL Agent (LangGraph)"]
     
-    subgraph "Agent Workflow"
-        Parse[Parse Request] --> ValidateReq[Validate Request]
-        ValidateReq -->|Valid| Retrieve[Retrieve Tables]
-        ValidateReq -->|Invalid| Report[Generate Report]
-        Retrieve --> Select[Select Tables]
-        Select -->|Has Context| GenSQL[Generate SQL]
-        Select -->|No Context| Report
-        GenSQL --> Guard[Guard SQL]
-        Guard -->|OK| Exec[Execute SQL]
-        Guard -->|Retry| GenSQL
-        Guard -->|Fail| Report
-        Exec --> Normalize[Normalize Result]
-        Normalize --> ValidateLLM[Validate Result]
-        ValidateLLM -->|OK| Report
-        ValidateLLM -->|Retry SQL| GenSQL
-    end
-
     subgraph "MCP Services (HTTP)"
         Agent -.->|POST /call| Postgres[MCP Postgres]
         Agent -.->|POST /call| Ubuntu[MCP Ubuntu]
@@ -51,6 +36,31 @@ graph TD
     Qdrant -->|Search/Upsert| QdrantDB[(Qdrant DB)]
     Postgres -->|Query| DB[(PostgreSQL)]
     Ubuntu -->|Exec| System[System Shell]
+```
+
+### 2. 에이전트 워크플로우 (Agent Workflow)
+
+```mermaid
+graph TD
+    Start((Start)) --> Parse[Parse Request]
+    Parse --> ValidateReq[Validate Request]
+    ValidateReq -->|Valid| Retrieve[Retrieve Tables]
+    ValidateReq -->|Invalid| Report[Generate Report]
+    Retrieve --> Select[Select Tables]
+    Select -->|Has Context| GenSQL[Generate SQL]
+    Select -->|No Context| Report
+    GenSQL --> Guard[Guard SQL]
+    Guard -->|OK| Exec[Execute SQL]
+    Guard -->|Retry| GenSQL
+    Guard -->|Fail| Report
+    Exec --> Normalize[Normalize Result]
+    Normalize --> ValidateLLM[Validate Result]
+    ValidateLLM -->|OK| Report
+    ValidateLLM -->|Retry SQL| GenSQL
+    Report --> End((End))
+    
+    style Start fill:#f9f,stroke:#333,stroke-width:2px
+    style End fill:#f9f,stroke:#333,stroke-width:2px
 ```
 
 ## 📂 프로젝트 구조
