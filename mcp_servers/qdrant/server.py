@@ -26,8 +26,6 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "table_index")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
-# 임베딩 제외 스키마 목록
-SCHEMA_EXCLUDE_LIST = {"pg_catalog", "information_schema", "chat"}
 
 embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL, api_key=OPENAI_API_KEY)
 
@@ -139,18 +137,8 @@ def _search_qdrant(query: str, top_k: int) -> list[dict]:
 def _upsert_schema(docs: list[dict]):
     client = get_client()
 
-    # 스키마 필터링 (settings에서 놓쳤을 경우 대비한 이중 방어)
-    filtered_docs = [
-        d for d in docs 
-        if d.get("schema") not in SCHEMA_EXCLUDE_LIST
-    ]
-    
-    if not filtered_docs:
-        logger.info("upsert_schema: 필터링 후 남은 문서가 없습니다. (전체 %d개 스킵됨)", len(docs))
-        return "모든 문서가 제외 대상 스키마에 속해 있어 스킵되었습니다."
-
     texts = []
-    for doc in filtered_docs:
+    for doc in docs:
         columns_text = "\n".join(
             f"- {c['name']} ({c['type']}): {c['description']}".strip()
             for c in doc["columns"]
@@ -166,7 +154,7 @@ def _upsert_schema(docs: list[dict]):
 
 
     points = []
-    for doc, vector in zip(filtered_docs, vectors):
+    for doc, vector in zip(docs, vectors):
         point_id = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
