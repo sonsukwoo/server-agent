@@ -11,6 +11,7 @@ import hashlib
 from pathlib import Path
 import logging
 import json
+from src.schema_listener import SchemaListener
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TEXT_TO_SQL")
@@ -28,12 +29,24 @@ class QueryResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """앱 시작/종료 수명주기 핸들러"""
+    schema_listener = None
     if settings.enable_schema_sync:
         try:
+            # 1. 초기 동기화 (1회)
             await sync_schema_embeddings_mcp()
+            
+            # 2. 리스너 시작 (Background)
+            schema_listener = SchemaListener(callback=sync_schema_embeddings_mcp)
+            await schema_listener.start()
+            
         except Exception as e:
-            logger.error("SCHEMA_EMBED: MCP sync failed: %s", e)
+            logger.error("SCHEMA_EMBED: MCP sync/listener setup failed: %s", e)
+            
     yield
+    
+    # 종료 처리
+    if schema_listener:
+        await schema_listener.stop()
 
 
 app = FastAPI(title="Server Agent API", lifespan=lifespan)

@@ -108,6 +108,43 @@ QDRANT_API_KEY=
 MCP_TRANSPORT=http
 ```
 
+### 1-1. 다른 DB로 연결하기
+`.env`에서 아래 항목만 교체하면 코드 수정 없이 연결됩니다.
+
+```ini
+DB_HOST=
+DB_PORT=
+DB_NAME=
+DB_USER=
+DB_PASSWORD=
+```
+
+### 1-2. 스키마 변경 실시간 감지 (선택)
+Postgres에 이벤트 트리거를 등록하면 스키마 변경 시 임베딩 동기화가 자동 실행됩니다.
+
+```sql
+CREATE OR REPLACE FUNCTION notify_schema_change()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  PERFORM pg_notify('table_change', 'schema_changed');
+END;
+$$;
+
+DROP EVENT TRIGGER IF EXISTS notify_schema_change;
+CREATE EVENT TRIGGER notify_schema_change
+ON ddl_command_end
+EXECUTE FUNCTION notify_schema_change();
+```
+
+확인:
+```sql
+SELECT evtname FROM pg_event_trigger WHERE evtname = 'notify_schema_change';
+```
+
+설정이 없으면 리스너는 자동 비활성화되며, 기존처럼 재시작 시 해시 비교로 동기화됩니다.
+
 ### 2. 실행 (Docker Compose)
 모든 서비스(Backend + 3 MCP Servers)를 한 번에 빌드하고 실행합니다.
 

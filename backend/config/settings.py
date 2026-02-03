@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     schema_hash_file: str = "/app/.schema_hash"
     schema_namespaces: str = ""  # comma-separated; empty means auto-detect user schemas
+    schema_notify_channel: str = "table_change"
+    schema_trigger_name: str = "notify_schema_change"
     
     # Timezone
     tz: str = "Asia/Seoul"
