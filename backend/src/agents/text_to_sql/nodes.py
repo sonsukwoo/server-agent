@@ -9,9 +9,8 @@ import logging
 from config.settings import settings
 from src.agents.mcp_clients.connector import postgres_client, qdrant_search_client
 from src.agents.text_to_sql.middleware.parsed_request_guard import ParsedRequestGuard
+from src.agents.text_to_sql.middleware.sql_safety_guard import SqlOutputGuard
 from .tools import expand_tables_tool
-
-logger = logging.getLogger("TEXT_TO_SQL")
 
 from .state import TextToSQLState
 from .prompts import (
@@ -22,20 +21,211 @@ from .prompts import (
     GENERATE_REPORT_SYSTEM, GENERATE_REPORT_USER,
 )
 from .constants import (
-    RETRIEVE_K, TOP_K, TIMEZONE
+    RETRIEVE_K, TOP_K
 )
 from .utils import (
-    get_current_time, get_now, parse_json_from_llm, normalize_sql,
+    get_current_time, parse_json_from_llm, normalize_sql,
     build_table_context, rebuild_context_from_candidates,
     classify_sql_error, next_batch, apply_elbow_cut
 )
-from .middleware.sql_safety_guard import SqlOutputGuard
+
+logger = logging.getLogger("TEXT_TO_SQL")
 
 llm_fast = ChatOpenAI(model=settings.model_fast, temperature=0)
 llm_smart = ChatOpenAI(model=settings.model_smart, temperature=0)
 
 # JSON Mode 강제 바인딩 (전역 생성)
 structured_llm_fast = llm_fast.bind(response_format={"type": "json_object"})
+
+# ─────────────────────────────────────────
+# Helper functions (used by specific nodes)
+# ─────────────────────────────────────────
+
+# Helper (Node 3: select_tables)
+def _format_candidates_for_rerank(candidates: list, top_col_limit: int = 5) -> str:
+    lines = []
+    for i, c in enumerate(candidates, 1):
+        cols = c.get("columns", []) or []
+        col_lines = []
+        for col in cols[:top_col_limit]:
+            desc = col.get("description", "") or ""
+            if len(desc) > 100:
+                desc = desc[:100] + "..."
+            col_lines.append(f"- {col.get('name')} ({col.get('type')}): {desc}")
+
+        lines.append(
+            "\n".join(
+                [
+                    f"[{i}] {c.get('table_name')}",
+                    f"  - description: {c.get('description') or ''}",
+                    f"  - primary_time_col: {c.get('primary_time_col') or '없음'}",
+                    f"  - join_keys: {', '.join(c.get('join_keys') or []) or '없음'}",
+                    f"  - score: {c.get('score')}",
+                    "  - columns:",
+                    *col_lines,
+                ]
+            )
+        )
+    return "\n\n".join(lines)
+
+
+# Helper (Node 3: select_tables)
+async def _call_rerank_llm(parsed: dict, candidates_str: str) -> list | None:
+    messages = [
+        SystemMessage(content=RERANK_TABLE_SYSTEM),
+        HumanMessage(
+            content=RERANK_TABLE_USER.format(
+                intent=parsed.get("intent", ""),
+                metric=parsed.get("metric", ""),
+                condition=parsed.get("condition", ""),
+                time_range=parsed.get("time_range", {}),
+                candidates=candidates_str,
+            )
+        ),
+    ]
+    response = await llm_smart.ainvoke(messages)
+    parsed_json, error = parse_json_from_llm(response.content)
+    if error:
+        logger.error("TEXT_TO_SQL:select_tables rerank_json_error=%s", error)
+        return None
+    return parsed_json
+
+
+# Helper (Node 3: select_tables)
+def _parse_rerank_response(response_json: list, candidates_len: int) -> list[int] | None:
+    if not isinstance(response_json, list):
+        return None
+        
+    scored = []
+    for item in response_json:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index"))
+            score = float(item.get("score"))
+            if 1 <= idx <= candidates_len:
+                scored.append({"index": idx, "score": score})
+        except (ValueError, TypeError):
+            continue
+            
+    # 점수 내림차순 정렬
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    
+    # Elbow Cut 적용
+    final_scored = apply_elbow_cut(scored)
+    
+    if not final_scored:
+        return None
+        
+    return [s["index"] for s in final_scored]
+
+
+# Helper (Node 3: select_tables)
+def _select_candidates(candidates: list, selected_indices: list[int]) -> list[str]:
+    """선택된 인덱스들을 바탕으로 테이블명 리스트 반환 (1-based index -> 0-based 접근)"""
+    selected_names = []
+    for idx in selected_indices:
+        real_idx = idx - 1
+        if 0 <= real_idx < len(candidates):
+            selected_names.append(candidates[real_idx]["table_name"])
+    return selected_names
+
+
+# Helper (Node 5: generate_sql)
+def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
+    failed = state.get("failed_queries", []) or []
+    return {
+        "intent": state.get("parsed_request", {}).get("intent", ""),
+        "time_start": state.get("parsed_request", {}).get("time_range", {}).get("start", ""),
+        "time_end": state.get("parsed_request", {}).get("time_range", {}).get("end", ""),
+        "metric": state.get("parsed_request", {}).get("metric", ""),
+        "condition": state.get("parsed_request", {}).get("condition", ""),
+        "table_name": ", ".join(state.get("selected_tables", []) or []),
+        "columns": state.get("table_context", ""),
+        "failed_queries": "\n".join(failed[-3:]),
+        "validation_reason": state.get("validation_reason", ""),
+        "_meta_table_count": len(state.get("selected_tables", []) or []),
+        "_meta_failed_count": len(failed),
+    }
+
+
+# Helper (Node 5: generate_sql)
+def _build_generate_sql_messages(inputs: dict) -> list:
+    return [
+        SystemMessage(content=GENERATE_SQL_SYSTEM),
+        HumanMessage(
+            content=GENERATE_SQL_USER.format(
+                intent=inputs["intent"],
+                time_start=inputs["time_start"],
+                time_end=inputs["time_end"],
+                metric=inputs["metric"],
+                condition=inputs["condition"],
+                table_name=inputs["table_name"],
+                columns=inputs["columns"],
+                failed_queries=inputs["failed_queries"],
+                validation_reason=inputs["validation_reason"],
+            )
+        ),
+    ]
+
+
+# Helper (Node 9: validate_llm)
+def _append_failed_query(failed_queries: list[str], sql: str) -> list[str]:
+    if not sql:
+        return failed_queries
+    failed_queries.append(sql)
+    return failed_queries[-3:]
+
+
+# Helper (Node 9: validate_llm)
+def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
+    return [
+        SystemMessage(content=VALIDATE_RESULT_SYSTEM),
+        HumanMessage(
+            content=VALIDATE_RESULT_USER.format(
+                user_question=state.get("user_question", ""),
+                time_start=state.get("parsed_request", {}).get("time_range", {}).get("start", "N/A"),
+                time_end=state.get("parsed_request", {}).get("time_range", {}).get("end", "N/A"),
+                generated_sql=current_sql,
+                table_context=state.get("table_context", ""),
+                sql_result=json.dumps(state.get("sql_result", [])[:10], ensure_ascii=False),
+                failed_queries="\n".join(state.get("failed_queries", [])[-3:]),
+                validation_reason=state.get("validation_reason", ""),
+            )
+        ),
+    ]
+
+
+# Helper (Node 9: validate_llm)
+def _handle_unnecessary_tables(
+    state: TextToSQLState, unnecessary: list[str], failed_queries: list[str]
+):
+    if not unnecessary:
+        return None
+    selected = state.get("selected_tables", []) or []
+    filtered = [t for t in selected if t not in unnecessary]
+    if not filtered or filtered == selected:
+        return None
+    new_context = rebuild_context_from_candidates(
+        state.get("table_candidates", []) or [], filtered
+    )
+    logger.info("TEXT_TO_SQL:validate_llm unnecessary tables found, retrying with filtered context")
+    return {
+        "selected_tables": filtered,
+        "table_context": new_context,
+        "verdict": "RETRY_SQL",
+        "validation_reason": "불필요한 테이블 제거 후 재시도",
+        "failed_queries": failed_queries,
+        "total_loops": state.get("total_loops", 0) + 1,
+    }
+
+
+# Helper (Node 9: validate_llm)
+def _format_failed_feedback(feedback: str, hint: str) -> str:
+    full_feedback = f"### 이전 시도 실패 원인\n{feedback}\n"
+    if hint:
+        full_feedback += f"\n### 올바른 쿼리 예시 및 힌트\n{hint}\n"
+    return full_feedback
 
 
 # ─────────────────────────────────────────
@@ -216,98 +406,6 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
 # Node 4: select_tables
 # ─────────────────────────────────────────
 
-def _format_candidates_for_rerank(candidates: list, top_col_limit: int = 5) -> str:
-    """후보 테이블 리스트를 LLM 프롬프트용 텍스트로 변환"""
-    candidates_str = ""
-    for i, c in enumerate(candidates, 1):
-        # 1) 컬럼 제한
-        all_cols = c.get("columns", [])
-        display_cols = [col.get("name", "") for col in all_cols[:top_col_limit]]
-        col_txt = ", ".join(display_cols)
-        if len(all_cols) > top_col_limit:
-            col_txt += f" ... (외 {len(all_cols) - top_col_limit}개)"
-        
-        # 2) Description 길이 제한
-        desc = c.get("description", "") or "설명 없음"
-        if len(desc) > 100:
-            desc = desc[:100] + "..."
-            
-        # 3) 기타 정보 명시
-        join_keys = ", ".join(c.get("join_keys", []) or []) or "없음"
-        primary_time_col = c.get("primary_time_col", "") or "없음"
-        score = c.get("score", "N/A")
-
-        candidates_str += (
-            f"{i}. {c['table_name']}\n"
-            f"   설명: {desc}\n"
-            f"   시간 컬럼: {primary_time_col}\n"
-            f"   조인 키: {join_keys}\n"
-            f"   주요 컬럼: {col_txt}\n"
-            f"   유사도: {score}\n\n"
-        )
-    return candidates_str
-
-
-async def _call_rerank_llm(parsed: dict, candidates_str: str) -> list | None:
-    """LLM Rerank 호출 및 JSON 파싱"""
-    messages = [
-        SystemMessage(content=RERANK_TABLE_SYSTEM),
-        HumanMessage(content=RERANK_TABLE_USER.format(
-            intent=parsed.get("intent", ""),
-            metric=parsed.get("metric", "N/A"),
-            condition=parsed.get("condition", "N/A"),
-            candidates=candidates_str,
-        )),
-    ]
-    try:
-        response = await llm_fast.ainvoke(messages)
-        parsed_json, error = parse_json_from_llm(response.content)
-        if error or not isinstance(parsed_json, list):
-            logger.warning("TEXT_TO_SQL:rerank_llm parsing failed or not list: %s", error)
-            return None
-        return parsed_json
-    except Exception as e:
-        logger.error("TEXT_TO_SQL:rerank_llm invoke error: %s", e)
-        return None
-
-
-def _parse_rerank_response(response_json: list, candidates_len: int) -> list[int] | None:
-    """LLM 응답에서 유효한 인덱스 추출 및 Elbow Cut 적용"""
-    scored = []
-    for item in response_json:
-        try:
-            idx = int(item.get("index"))
-            score = float(item.get("score"))
-            if 1 <= idx <= candidates_len:
-                scored.append({"index": idx, "score": score})
-        except (ValueError, TypeError):
-            continue
-    
-    # 점수 내림차순 정렬
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    
-    # Elbow Cut 적용
-    final_scored = apply_elbow_cut(scored)
-    
-    if not final_scored:
-        return None
-        
-    return [s["index"] for s in final_scored]
-
-
-def _select_candidates(candidates: list, selected_indices: list[int]) -> list[str]:
-    """인덱스로 실제 테이블 객체 선택 및 이름 리스트 반환"""
-    selected_names = []
-    # 중복 제거 및 순서 유지: dict.fromkeys() 활용
-    unique_indices = list(dict.fromkeys(selected_indices))
-    
-    for idx in unique_indices:
-        if 1 <= idx <= len(candidates):
-            c = candidates[idx - 1]
-            selected_names.append(c["table_name"])
-    return selected_names
-
-
 async def select_tables(state: TextToSQLState) -> dict:
     # [역할] 후보 테이블 중 상위 TOP_K 선택 + 스키마 컨텍스트 구성
     # [입력] table_candidates, parsed_request
@@ -368,58 +466,6 @@ async def select_tables(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 # Node 5: generate_sql
 # ─────────────────────────────────────────
-
-def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
-    """SQL 생성 프롬프트에 필요한 입력 데이터 구성"""
-    parsed = state.get("parsed_request", {})
-    time_range = parsed.get("time_range", {})
-    
-    # 테이블 이름 리스트 (없으면 N/A)
-    selected_tables = state.get("selected_tables", []) or []
-    table_name_str = ", ".join(selected_tables) or "N/A"
-    
-    # 실패 쿼리 기록 포맷팅 (인덱스 추가)
-    failed_queries = state.get("failed_queries", []) or []
-    if failed_queries:
-        failed_queries_str = "\n".join([f"[{i+1}] {q}" for i, q in enumerate(failed_queries)])
-    else:
-        failed_queries_str = "없음"
-        
-    validation_reason = state.get("feedback_to_sql") or state.get("validation_reason") or "없음"
-
-    return {
-        "intent": parsed.get("intent", ""),
-        "time_start": time_range.get("start", "N/A"),
-        "time_end": time_range.get("end", "N/A"),
-        "metric": parsed.get("metric", "N/A"),
-        "condition": parsed.get("condition", "N/A"),
-        "table_name": table_name_str,
-        "columns": state.get("table_context", ""),
-        "failed_queries": failed_queries_str,
-        "validation_reason": validation_reason,
-        # 로깅용 메타데이터
-        "_meta_table_count": len(selected_tables),
-        "_meta_failed_count": len(failed_queries),
-    }
-
-
-def _build_generate_sql_messages(inputs: dict) -> list:
-    """LLM 메시지 생성"""
-    return [
-        SystemMessage(content=GENERATE_SQL_SYSTEM),
-        HumanMessage(content=GENERATE_SQL_USER.format(
-            intent=inputs["intent"],
-            time_start=inputs["time_start"],
-            time_end=inputs["time_end"],
-            metric=inputs["metric"],
-            condition=inputs["condition"],
-            table_name=inputs["table_name"],
-            columns=inputs["columns"],
-            failed_queries=inputs["failed_queries"],
-            validation_reason=inputs["validation_reason"],
-        )),
-    ]
-
 
 async def generate_sql(state: TextToSQLState) -> dict:
     # [역할] 선택된 테이블 컨텍스트로 SQL 생성
@@ -722,101 +768,6 @@ async def normalize_result(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 # Node 9: validate_llm
 # ─────────────────────────────────────────
-
-def _append_failed_query(failed_queries: list[str], sql: str) -> list[str]:
-    if sql and sql not in failed_queries:
-        failed_queries.append(sql)
-    return failed_queries[-3:]
-
-
-def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
-    parsed = state.get("parsed_request", {})
-    time_range = parsed.get("time_range", {})
-    return [
-        SystemMessage(content=VALIDATE_RESULT_SYSTEM),
-        HumanMessage(content=VALIDATE_RESULT_USER.format(
-            user_question=state.get("user_question", ""),
-            time_start=time_range.get("start", "N/A"),
-            time_end=time_range.get("end", "N/A"),
-            generated_sql=current_sql,
-            sql_result=json.dumps(state.get("sql_result", [])[:10], ensure_ascii=False, indent=2),
-            table_context=state.get("table_context", ""),
-        )),
-    ]
-
-
-def _handle_unnecessary_tables(
-    state: TextToSQLState,
-    unnecessary: list[str],
-    failed_queries: list[str],
-) -> dict | None:
-    if not unnecessary:
-        return None
-    current_tables = list(state.get("selected_tables", []) or [])
-    filtered = [t for t in current_tables if t not in unnecessary]
-    candidates = state.get("table_candidates", []) or []
-    _, new_context = rebuild_context_from_candidates(candidates, filtered)
-    if not filtered:
-        return None
-    logger.info("TEXT_TO_SQL:validate_llm unnecessary tables found, retrying with filtered context")
-    return {
-        "selected_tables": filtered,
-        "table_context": new_context,
-        "verdict": "SQL_BAD",
-        "feedback_to_sql": "불필요한 테이블을 제외하고 다시 작성하세요.",
-        "failed_queries": failed_queries,
-        "validation_retry_count": state.get("validation_retry_count", 0) + 1,
-        "total_loops": state.get("total_loops", 0) + 1,
-    }
-
-
-def _handle_data_missing_override(
-    verdict: str,
-    feedback: str,
-    state: TextToSQLState,
-    current_sql: str,
-    failed_queries: list[str],
-) -> tuple[str, str, list[str]]:
-    if verdict != "DATA_MISSING":
-        return verdict, feedback, failed_queries
-
-    question = state.get("user_question", "").lower()
-    context = state.get("table_context", "").lower()
-
-    needs_ram = any(k in question for k in ["램", "ram", "메모리", "memory"])
-    needs_cpu = any(k in question for k in ["cpu", "시피유", "프로세서"])
-    needs_disk = any(k in question for k in ["디스크", "disk", "저장소"])
-
-    has_ram = "metrics_memory" in context
-    has_cpu = "metrics_cpu" in context
-    has_disk = "metrics_disk" in context
-
-    missing = []
-    if needs_ram and has_ram and "metrics_memory" not in current_sql:
-        missing.append("metrics_memory (RAM 지표)")
-    if needs_cpu and has_cpu and "metrics_cpu" not in current_sql:
-        missing.append("metrics_cpu (CPU 지표)")
-    if needs_disk and has_disk and "metrics_disk" not in current_sql:
-        missing.append("metrics_disk (디스크 지표)")
-
-    if missing:
-        verdict = "SQL_BAD"
-        feedback = (
-            f"제공된 스키마에 {', '.join(missing)} 테이블이 존재함에도 쿼리에 포함되지 않았습니다. "
-            "반드시 해당 테이블을 사용하여 지표를 산출하세요."
-        )
-        failed_queries = _append_failed_query(failed_queries, current_sql)
-
-    return verdict, feedback, failed_queries
-
-
-def _format_failed_feedback(feedback: str, hint: str) -> str:
-    full_feedback = f"### 이전 시도 실패 원인\n{feedback}\n"
-    if hint:
-        full_feedback += f"\n### 올바른 쿼리 예시 및 힌트\n{hint}\n"
-    return full_feedback
-
-
 async def validate_llm(state: TextToSQLState) -> dict:
     # [역할] 최종 정합성 판단 및 Verdict 확정 (Node 9)
     # [입력] user_question, generated_sql, sql_result, result_status, verdict(from Node 8)
@@ -855,10 +806,6 @@ async def validate_llm(state: TextToSQLState) -> dict:
     unnecessary_result = _handle_unnecessary_tables(state, unnecessary, failed_queries)
     if unnecessary_result:
         return unnecessary_result
-
-    verdict, feedback, failed_queries = _handle_data_missing_override(
-        verdict, feedback, state, current_sql, failed_queries
-    )
 
     # C. TABLE_MISSING 처리 (내부 툴 호출로 테이블 확장)
     if verdict == "TABLE_MISSING":

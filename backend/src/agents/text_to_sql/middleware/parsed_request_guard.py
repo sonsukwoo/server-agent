@@ -57,10 +57,15 @@ class ParsedRequestGuard:
             if not time_range.get("timezone"):
                 time_range["timezone"] = settings.tz
 
-            # 시간 유효성 검증 (미래 차단 등)
-            is_valid_time, time_error = ParsedRequestGuard._validate_time_values(start_str, end_str)
+            # 시간 유효성 검증 (미래 차단 등) - Auto Clipping 적용
+            is_valid_time, time_error, adjusted_end = ParsedRequestGuard._validate_time_values(start_str, end_str)
             if not is_valid_time:
                 return False, time_error, parsed
+            
+            # Auto Clipping 적용: End time이 조정되었다면 업데이트
+            if adjusted_end:
+                 parsed["time_range"]["end"] = adjusted_end.isoformat()
+                 logger.info("ParsedRequestGuard: Adjusted future end time from %s to %s", end_str, parsed["time_range"]["end"])
             
             # 파싱된 값으로 업데이트 (포맷 보정 등 가능성 고려)
             # 여기서는 검증만 통과하면 원본 유지
@@ -82,16 +87,16 @@ class ParsedRequestGuard:
         }
 
     @staticmethod
-    def _validate_time_values(start_str: str, end_str: str) -> Tuple[bool, str]:
-        """시간 값의 논리적 타당성 검증 (미래 차단, 역전 방지)"""
+    def _validate_time_values(start_str: str, end_str: str) -> Tuple[bool, str, Any]:
+        """
+        시간 값의 논리적 타당성 검증 (미래 차단, 역전 방지)
+        - 미래 End Time에 대해서는 현재 시간으로 Clipping 수행
+        """
         try:
             # ISO format 파싱 (Z 처리 포함)
             # 3.11 이전 버전 호환성을 위해 replace('Z', '+00:00') 처리
             s = str(start_str).replace("Z", "+00:00")
             e = str(end_str).replace("Z", "+00:00")
-            
-            # 6자리 이상 소수점(마이크로초) 잘림 방지는 여기서 고려 안함 (LLM이 보통 초단위)
-            # 하지만 필요시 dateutil.parser 사용 가능
             
             start_dt = datetime.fromisoformat(s)
             end_dt = datetime.fromisoformat(e)
@@ -106,17 +111,24 @@ class ParsedRequestGuard:
             # 1. 미래 시간 차단 (허용 오차 적용)
             future_limit = now + timedelta(minutes=FUTURE_TOLERANCE_MINUTES)
             
+            # Start time이 미래인 경우는 여전히 에러 처리 (시작 자체가 미래면 조회 불가)
             if start_dt > future_limit:
-                 return False, f"Start time ({start_str}) is in the future."
+                 return False, f"Start time ({start_str}) is in the future.", None
             
+            adjusted_end = None
+            # End time이 미래인 경우 -> 현재 시간으로 Clipping
             if end_dt > future_limit:
-                 return False, f"End time ({end_str}) is in the future."
+                 # 단, 미래라도 시작 시간보다는 뒤여야 함 (Clipping 후 역전되면 안됨)
+                 # 하지만 여기서는 '현재'로 당기는 것이므로, start가 현재보다 과거라면 문제 없음.
+                 # 만약 start도 거의 현재라면? -> 역전 검사에서 걸러짐
+                 adjusted_end = now
+                 end_dt = now # 역전 검사를 위해 업데이트
 
             # 2. 역전 검사
             if start_dt > end_dt:
-                return False, "Start time is later than End time."
+                return False, "Start time is later than End time.", None
 
-            return True, ""
+            return True, "", adjusted_end
 
         except ValueError as e:
-            return False, f"Invalid time format: {str(e)}"
+            return False, f"Invalid time format: {str(e)}", None
