@@ -32,7 +32,25 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
                         ) : (
                             <>
                                 <div className="markdown-body">
-                                    <ReactMarkdown>{message.text}</ReactMarkdown>
+                                    <ReactMarkdown
+                                        components={{
+                                            code({ inline, className, children }: any) {
+                                                if (inline) {
+                                                    return <code className={className}>{children}</code>;
+                                                }
+                                                return (
+                                                    <details className="code-block">
+                                                        <summary>SQL 보기</summary>
+                                                        <pre>
+                                                            <code className={className}>{children}</code>
+                                                        </pre>
+                                                    </details>
+                                                );
+                                            }
+                                        }}
+                                    >
+                                        {message.text}
+                                    </ReactMarkdown>
                                 </div>
 
                                 {isAssistant && message.logs && message.logs.length > 0 && (

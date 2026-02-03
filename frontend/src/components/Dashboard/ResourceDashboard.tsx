@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Cpu, HardDrive, Layout, Activity, ArrowDown, ArrowUp } from 'lucide-react';
+import { Cpu, HardDrive, Layout } from 'lucide-react';
 import { ApiClient } from '../../api/client';
 
 export const ResourceDashboard: React.FC = () => {
@@ -54,22 +54,6 @@ export const ResourceDashboard: React.FC = () => {
                 </div>
             </div>
 
-            <div className="dashboard-card network">
-                <div className="card-icon net">
-                    <Activity size={18} />
-                </div>
-                <div className="card-info">
-                    <span className="card-label">네트워크 (RX / TX)</span>
-                    <div className="net-values">
-                        <span className="net-item">
-                            <ArrowDown size={12} /> {summary["네트워크 수신"] || '0MB/s'}
-                        </span>
-                        <span className="net-item">
-                            <ArrowUp size={12} /> {summary["네트워크 송신"] || '0MB/s'}
-                        </span>
-                    </div>
-                </div>
-            </div>
         </div>
     );
 };

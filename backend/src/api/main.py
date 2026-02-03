@@ -12,6 +12,8 @@ from pathlib import Path
 import logging
 import json
 from src.schema_listener import SchemaListener
+from src.db.chat_store import chat_store
+from src.api.chat import router as chat_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TEXT_TO_SQL")
@@ -30,15 +32,21 @@ class QueryResponse(BaseModel):
 async def lifespan(app: FastAPI):
     """앱 시작/종료 수명주기 핸들러"""
     schema_listener = None
+    try:
+        # 채팅 기록 스키마 초기화 (항상)
+        await chat_store.ensure_chat_schema()
+    except Exception as e:
+        logger.error("CHAT_STORE: ensure schema failed: %s", e)
+
     if settings.enable_schema_sync:
         try:
             # 1. 초기 동기화 (1회)
             await sync_schema_embeddings_mcp()
-            
+
             # 2. 리스너 시작 (Background)
             schema_listener = SchemaListener(callback=sync_schema_embeddings_mcp)
             await schema_listener.start()
-            
+
         except Exception as e:
             logger.error("SCHEMA_EMBED: MCP sync/listener setup failed: %s", e)
             
@@ -59,6 +67,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Router 등록
+app.include_router(chat_router)
+
 @app.get("/")
 async def root():
     return {"message": "Server Agent API is running"}
@@ -68,7 +80,14 @@ async def sync_schema_embeddings_mcp() -> None:
     """DB 스키마를 읽어 Qdrant MCP 임베딩 서버로 업서트"""
     logger.info("스키마 임베딩 동기화 시작")
 
-    tables_sql = """
+    excluded_schemas = tuple(
+        s.strip() for s in settings.schema_exclude_namespaces.split(",") if s.strip()
+    )
+    # SQL 인젝션 방지를 위해 파라미터 바인딩은 어렵지만, settings 값은 신뢰한다고 가정하거나
+    # 안전하게 포맷팅. 여기서는 간단히 리스트 문자열로 변환.
+    excluded_str = ", ".join(f"'{s}'" for s in excluded_schemas)
+    
+    tables_sql = f"""
     SELECT
       n.nspname AS schema,
       c.relname AS table_name,
@@ -76,11 +95,11 @@ async def sync_schema_embeddings_mcp() -> None:
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind IN ('r','p','v')
-      AND n.nspname NOT IN ('pg_catalog','information_schema')
+      AND n.nspname NOT IN ({excluded_str})
     ORDER BY n.nspname, c.relname;
     """
 
-    columns_sql = """
+    columns_sql = f"""
     SELECT
       n.nspname AS schema,
       c.relname AS table_name,
@@ -93,7 +112,7 @@ async def sync_schema_embeddings_mcp() -> None:
     WHERE a.attnum > 0
       AND NOT a.attisdropped
       AND c.relkind IN ('r','p','v')
-      AND n.nspname NOT IN ('pg_catalog','information_schema')
+      AND n.nspname NOT IN ({excluded_str})
     ORDER BY n.nspname, c.relname, a.attnum;
     """
 

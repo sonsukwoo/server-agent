@@ -65,6 +65,75 @@ body {
   background-color: var(--glass);
 }
 
+.sidebar-sessions {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.sidebar-session {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background-color: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.sidebar-session:hover {
+  background-color: var(--glass);
+  color: var(--text-primary);
+}
+
+.sidebar-session.active {
+  background-color: var(--glass);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+.sidebar-session-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-session-loading {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: #10a37f;
+    box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.25);
+    animation: pulse 1.2s ease-in-out infinite;
+    margin-right: 6px;
+}
+
+@keyframes pulse {
+    0% { transform: scale(0.9); opacity: 0.6; }
+    50% { transform: scale(1.2); opacity: 1; }
+    100% { transform: scale(0.9); opacity: 0.6; }
+}
+
+.sidebar-session-delete {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-session-delete:hover {
+  color: var(--error);
+}
+
 /* Main Area */
 .main-area {
   flex: 1;
@@ -77,7 +146,7 @@ body {
 .chat-container {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 0;
+  padding: 40px 0 24px 0;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -225,6 +294,51 @@ body {
   background-color: var(--glass);
 }
 
+.data-table-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background-color: var(--bg-tertiary);
+}
+
+.data-table-toggle {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.data-table-toggle:hover {
+  color: var(--text-primary);
+}
+
+.code-block {
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+
+.code-block summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border);
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+
 /* Dashboard Styles */
 .dashboard-container {
   display: grid;
@@ -245,6 +359,8 @@ body {
   align-items: center;
   gap: 12px;
   transition: transform 0.2s, background-color 0.2s;
+  flex: 0 0 auto;
+  min-width: 180px;
 }
 
 .dashboard-card:hover {

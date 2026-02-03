@@ -10,7 +10,7 @@ from config.settings import settings
 from src.agents.mcp_clients.connector import postgres_client, qdrant_search_client
 from src.agents.text_to_sql.middleware.parsed_request_guard import ParsedRequestGuard
 from src.agents.text_to_sql.middleware.sql_safety_guard import SqlOutputGuard
-from .tools import expand_tables_tool
+from .table_expand_tool import expand_tables_tool
 
 from .state import TextToSQLState
 from .prompts import (

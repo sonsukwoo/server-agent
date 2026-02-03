@@ -16,6 +16,25 @@ export interface QueryResponse {
 
 const API_BASE_URL = 'http://localhost:8000';
 
+export interface ChatSession {
+    id: string;
+    title: string;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ChatMessage {
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    payload_json?: any;
+    created_at: string;
+}
+
+export interface ChatSessionDetail extends ChatSession {
+    messages: ChatMessage[];
+}
+
 export class ApiClient {
     static async query(
         question: string,
@@ -80,6 +99,55 @@ export class ApiClient {
         const response = await fetch(`${API_BASE_URL}/resource-summary`);
         if (!response.ok) {
             throw new Error('Failed to fetch resource summary');
+        }
+        return response.json();
+    }
+
+    static async getSessions(): Promise<ChatSession[]> {
+        const response = await fetch(`${API_BASE_URL}/chat/sessions`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch sessions: ${response.status}`);
+        }
+        return response.json();
+    }
+
+    static async createSession(title: string = "New Chat"): Promise<ChatSession> {
+        const response = await fetch(`${API_BASE_URL}/chat/sessions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title })
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to create session: ${response.status}`);
+        }
+        return response.json();
+    }
+
+    static async getSession(id: string): Promise<ChatSessionDetail> {
+        const response = await fetch(`${API_BASE_URL}/chat/sessions/${id}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch session ${id}: ${response.status}`);
+        }
+        return response.json();
+    }
+
+    static async deleteSession(id: string): Promise<void> {
+        const response = await fetch(`${API_BASE_URL}/chat/sessions/${id}`, {
+            method: 'DELETE'
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to delete session ${id}: ${response.status}`);
+        }
+    }
+
+    static async saveMessage(sessionId: string, role: string, content: string, payload?: any): Promise<ChatMessage> {
+        const response = await fetch(`${API_BASE_URL}/chat/sessions/${sessionId}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role, content, payload_json: payload })
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to save message: ${response.status}`);
         }
         return response.json();
     }
