@@ -1,9 +1,6 @@
 """Text-to-SQL 에이전트 노드/미들웨어 (통합형)"""
 import json
 import re
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-import dateparser
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -11,6 +8,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 import logging
 from config.settings import settings
 from src.agents.mcp_clients.connector import postgres_client, qdrant_search_client
+from src.agents.text_to_sql.middleware.parsed_request_guard import ParsedRequestGuard
 
 logger = logging.getLogger("TEXT_TO_SQL")
 
@@ -30,7 +28,7 @@ from .utils import (
     build_table_context, rebuild_context_from_candidates,
     classify_sql_error, next_batch, apply_elbow_cut
 )
-from .middleware.output_guard import SqlOutputGuard
+from .middleware.sql_safety_guard import SqlOutputGuard
 
 llm_fast = ChatOpenAI(model=settings.model_fast, temperature=0)
 llm_smart = ChatOpenAI(model=settings.model_smart, temperature=0)
@@ -100,232 +98,52 @@ async def parse_request(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 
 
-def _detect_date_anchor(question: str) -> datetime.date:
-    """질문에서 '오늘', '어제' 같은 날짜 앵커 추출 (없으면 오늘)"""
-    now = get_now()
-    if not question:
-        return now.date()
-
-    # 시간 해석 없이 날짜만 잡기 위한 설정
-    settings = {
-        'TIMEZONE': TIMEZONE,
-        'RETURN_AS_TIMEZONE_AWARE': True,
-        'RELATIVE_BASE': now,
-        'PREFER_DATES_FROM': 'past'
-    }
-    
-    try:
-        # dateparser가 시간을 포함해 해석하더라도 .date()만 취함
-        dt = dateparser.parse(question, settings=settings, languages=['ko'])
-        if dt:
-            return dt.date()
-    except Exception:
-        pass
-        
-    return now.date()
-
-
-def _extract_time_range_text(question: str) -> tuple[int, int, int, int] | None:
-    """
-    질문에서 'N시~M시' 패턴 추출
-    :return: (h1, m1, h2, m2) 튜플 or None
-    """
-    if not question:
-        return None
-
-    # 패턴: (오전/오후)? N시 (분)? ~ (오전/오후)? M시 (분)?
-    # 예: "13:00~15:00", "1시부터 3시", "오후 1시~3시"
-    range_pattern = re.compile(r"(오전|오후)?\s*(\d{1,2})(?:시|:)(\d{2})?\s*(?:~|-|부터|에서)\s*(오전|오후)?\s*(\d{1,2})(?:시|:)(\d{2})?")
-    match = range_pattern.search(question)
-    
-    if not match:
-        return None
-
-    ampm1, h1, m1, ampm2, h2, m2 = match.groups()
-
-    # 오전/오후가 한쪽만 있으면 같은 값으로 맞춤
-    if ampm1 and not ampm2:
-        ampm2 = ampm1
-    if ampm2 and not ampm1:
-        ampm1 = ampm2
-
-    def to_24hr(ampm, h, m):
-        h = int(h)
-        m = int(m) if m else 0
-        # 오전/오후가 모두 없으면 기본을 '오후'로 간주
-        if ampm is None:
-            ampm = "오후"
-        if ampm == "오후" and h < 12:
-            h += 12
-        if ampm == "오전" and h == 12:
-            h = 0
-        return h, m
-
-    h1_val, m1_val = to_24hr(ampm1, h1, m1)
-    h2_val, m2_val = to_24hr(ampm2, h2, m2)
-
-    return h1_val, m1_val, h2_val, m2_val
-
-
-def _build_range_from_anchor(anchor_date: datetime.date, time_tuple: tuple[int, int, int, int]) -> dict:
-    """날짜 앵커와 시간 튜플을 결합하여 time_range 생성"""
-    h1, m1, h2, m2 = time_tuple
-    now = get_now()
-    tz = getattr(now, 'tzinfo', None) or ZoneInfo(TIMEZONE)
-
-    try:
-        # datetime.combine 사용 시 time 객체 생성
-        t1 = datetime.min.time().replace(hour=h1, minute=m1)
-        t2 = datetime.min.time().replace(hour=h2, minute=m2)
-        
-        start_dt = datetime.combine(anchor_date, t1, tzinfo=tz)
-        end_dt = datetime.combine(anchor_date, t2, tzinfo=tz)
-        
-        return {
-            "start": start_dt.isoformat(),
-            "end": end_dt.isoformat(),
-            "timezone": TIMEZONE
-        }
-    except ValueError:
-        return None
-
-
-def _fallback_time_range(mode: str = "recent_6h") -> dict:
-    """시간 정보 부재 시 Fallback 범위 생성 (기본: 최근 6시간)"""
-    now = get_now()
-    # mode 확장에 대비해 매개변수는 유지하되, 현재는 단일 로직으로 처리
-    start_dt = now - timedelta(hours=6)
-    return {
-        "start": start_dt.isoformat(),
-        "end": now.isoformat(),
-        "timezone": TIMEZONE
-    }
-
-
-def _normalize_and_validate_time_range(time_range: dict) -> tuple[bool, dict | str]:
-    """
-    시간 범위 정규화 및 유효성 검증 (미래 차단, 역전 방지)
-    :return: (is_valid, normalized_range_or_error_msg)
-    """
-    if not time_range or not time_range.get("start") or not time_range.get("end"):
-        return False, "시간 범위 형식이 올바르지 않습니다."
-
-    start_str = time_range["start"]
-    end_str = time_range["end"]
-    now = get_now()
-    
-    settings = {'TIMEZONE': TIMEZONE, 'RETURN_AS_TIMEZONE_AWARE': True}
-
-    try:
-        # dateparser로 파싱 (ISO 문자열도 잘 처리함)
-        start_dt = dateparser.parse(str(start_str), settings=settings)
-        end_dt = dateparser.parse(str(end_str), settings=settings)
-
-        # 타임존 누락 시 보정
-        if start_dt and start_dt.tzinfo is None: start_dt = start_dt.replace(tzinfo=now.tzinfo)
-        if end_dt and end_dt.tzinfo is None: end_dt = end_dt.replace(tzinfo=now.tzinfo)
-        
-        if not start_dt or not end_dt:
-             return False, "날짜 형식을 파싱할 수 없습니다."
-
-        # 1. 미래 차단 (Start가 미래면 Fail)
-        #    허용 오차 1분 (네트워크/시스템 시간 차이 고려)
-        if start_dt > now + timedelta(minutes=1): 
-             return False, f"미래 데이터(시작: {start_str})는 조회할 수 없습니다."
-        
-        # 2. 미래 차단 (End가 미래면 Fail)
-        if end_dt > now + timedelta(minutes=5):
-             return False, f"미래 데이터(종료: {end_str})는 조회할 수 없습니다."
-
-        # 3. 역전 검사
-        if start_dt > end_dt:
-             return False, "시작 시간이 종료 시간보다 늦습니다."
-
-        return True, {
-            "start": start_dt.isoformat(),
-            "end": end_dt.isoformat(),
-            "timezone": TIMEZONE
-        }
-
-    except Exception as e:
-        return False, f"시간 검증 중 오류 발생: {str(e)}"
+# 시간 범위 추출/보정 로직은 제거됨 (LLM time_range 그대로 사용).
 
 
 async def validate_request(state: TextToSQLState) -> dict:
-    # [역할] 파싱 결과의 기본 유효성/시간 범위를 검증 및 보정 (Refactored)
-    # [입력] parsed_request, user_question
+    # [역할] 파싱 결과의 유효성 검증 및 기본값 보정 (Middleware 위임)
+    # [입력] parsed_request
     # [출력] is_request_valid, request_error (실패 시 결과 상태 error로 전환)
-    
     logger.info("TEXT_TO_SQL:validate_request start")
-    
+
     if state.get("is_request_valid") is False:
+        err = state.get("request_error") or "알 수 없는 오류"
         return {
             "is_request_valid": False,
-            "request_error": state.get("request_error", "알 수 없는 오류"),
-            "validation_reason": state.get("request_error", "알 수 없는 오류"),
+            "request_error": err,
+            "validation_reason": err,
             "result_status": "error",
         }
 
     parsed = state.get("parsed_request", {})
-    if not parsed.get("intent"):
-        return {
-            "is_request_valid": False,
-            "request_error": "intent 필드가 없습니다",
-            "validation_reason": "intent 필드가 없습니다",
-            "result_status": "error",
-        }
-
-    # 1. 질문 원문 분석 (날짜 앵커 + 시간 범위 추출)
-    user_question = state.get("user_question", "")
-    anchor_date = _detect_date_anchor(user_question)
-    time_tuple = _extract_time_range_text(user_question)
     
-    candidate_tr = None
-    
-    # (A) 질문에서 명시적 시간 범위가 추출된 경우
-    if time_tuple:
-        candidate_tr = _build_range_from_anchor(anchor_date, time_tuple)
-        if candidate_tr:
-            logger.info("TEXT_TO_SQL:validate_request time extracted from question: %s", candidate_tr)
-
-    # (B) LLM 결과 사용 (Regex 추출 실패 시)
-    if not candidate_tr:
-        llm_tr = parsed.get("time_range")
-        if isinstance(llm_tr, dict) and llm_tr.get("start") and llm_tr.get("end"):
-            candidate_tr = llm_tr
-            # LLM 결과에 타임존이 없으면 보정이 필요하므로 normalize에서 처리
-
-    # (C) Fallback
-    if not candidate_tr:
-        candidate_tr = _fallback_time_range("recent_6h")
-        logger.info("TEXT_TO_SQL:validate_request fallback applied")
-
-    # 2. 정규화 및 유효성 검증
-    is_valid, result = _normalize_and_validate_time_range(candidate_tr)
+    # 미들웨어 호출
+    is_valid, error_reason, normalized_parsed = ParsedRequestGuard.validate(parsed)
     
     if not is_valid:
-        # 에러 발생
-        error_msg = result if isinstance(result, str) else "Invalid Time Range"
+        logger.info("TEXT_TO_SQL:validate_request failed: %s", error_reason)
         return {
             "is_request_valid": False,
-            "request_error": error_msg,
-            "validation_reason": error_msg,
+            "request_error": error_reason,
+            "validation_reason": error_reason,
             "result_status": "error",
         }
-
-    # 성공 적용
-    parsed["time_range"] = result
-    
-    logger.info(
-        "TEXT_TO_SQL:validate_request ok start=%s end=%s",
-        result.get("start"),
-        result.get("end"),
-    )
-    
+        
+    # 성공 로깅
+    time_range = normalized_parsed.get("time_range")
+    if time_range:
+        logger.info(
+            "TEXT_TO_SQL:validate_request ok (time_range: %s ~ %s)",
+            time_range.get("start"), time_range.get("end")
+        )
+    else:
+        logger.info("TEXT_TO_SQL:validate_request ok (no time_range)")
+        
     return {
-        "parsed_request": parsed,
+        "parsed_request": normalized_parsed,
         "is_request_valid": True,
-        "request_error": ""
+        "request_error": "",
     }
 
 
@@ -742,78 +560,165 @@ async def execute_sql(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 
 async def normalize_result(state: TextToSQLState) -> dict:
-    # [역할] 실행 결과/에러를 표준 상태로 정규화
+    # [역할] 실행 결과/에러를 표준 상태로 분류 (Node 8)
     # [입력] sql_result, sql_error
     # [출력] result_status, verdict, validation_reason, feedback_to_sql
+    
     sql_error = state.get("sql_error")
-    failed_queries = list(state.get("failed_queries", []) or [])
-    current_sql = state.get("generated_sql", "")
-
+    
+    # 1. SQL 실행 에러 발생 시
     if sql_error:
         verdict, reason = classify_sql_error(sql_error)
         logger.error("TEXT_TO_SQL:normalize_result sql_error=%s verdict=%s", sql_error, verdict)
         
-        if current_sql and current_sql not in failed_queries:
-            failed_queries.append(current_sql)
-            failed_queries = failed_queries[-3:]
-
         return {
             "result_status": "error",
             "verdict": verdict,
             "validation_reason": reason,
             "feedback_to_sql": reason,
-            "failed_queries": failed_queries,
+            # failed_queries 누적은 9번 노드로 이관
             "total_loops": state.get("total_loops", 0) + 1,
         }
 
+    # 2. 결과 데이터가 없는 경우
     if not state.get("sql_result"):
         logger.info("TEXT_TO_SQL:normalize_result empty_result")
         return {
             "result_status": "empty",
-            "failed_queries": failed_queries, # 현재 상태 유지
-            # 결과가 없어도 쿼리 자체는 문법적으로 맞으므로 아직 failed_queries에 넣지 않음 (validate_llm에서 결정)
+            # 판정은 9번 노드(validate_llm)에서 수행
         }
 
-    return {"result_status": "ok"}
+    # 3. 결과 데이터가 있는 경우
+    logger.info("TEXT_TO_SQL:normalize_result success_result")
+    return {
+        "result_status": "ok",
+        # 판정은 9번 노드(validate_llm)에서 수행
+    }
 
 
 # ─────────────────────────────────────────
 # Node 9: validate_llm
 # ─────────────────────────────────────────
 
-async def validate_llm(state: TextToSQLState) -> dict:
-    # [역할] LLM으로 결과-의도 정합성 판단
-    # [입력] user_question, generated_sql, sql_result, table_context, time_range
-    # [출력] verdict, feedback_to_sql, validation_reason
-    # SQL 에러가 있으면 스킵 (이미 verdict 결정됨)
-    if state.get("sql_error"):
-        return {}
+def _append_failed_query(failed_queries: list[str], sql: str) -> list[str]:
+    if sql and sql not in failed_queries:
+        failed_queries.append(sql)
+    return failed_queries[-3:]
 
+
+def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
     parsed = state.get("parsed_request", {})
     time_range = parsed.get("time_range", {})
-
-    messages = [
+    return [
         SystemMessage(content=VALIDATE_RESULT_SYSTEM),
         HumanMessage(content=VALIDATE_RESULT_USER.format(
             user_question=state.get("user_question", ""),
             time_start=time_range.get("start", "N/A"),
             time_end=time_range.get("end", "N/A"),
-            generated_sql=state.get("generated_sql", ""),
+            generated_sql=current_sql,
             sql_result=json.dumps(state.get("sql_result", [])[:10], ensure_ascii=False, indent=2),
             table_context=state.get("table_context", ""),
         )),
     ]
 
+
+def _handle_unnecessary_tables(
+    state: TextToSQLState,
+    unnecessary: list[str],
+    failed_queries: list[str],
+) -> dict | None:
+    if not unnecessary:
+        return None
+    current_tables = list(state.get("selected_tables", []) or [])
+    filtered = [t for t in current_tables if t not in unnecessary]
+    candidates = state.get("table_candidates", []) or []
+    _, new_context = rebuild_context_from_candidates(candidates, filtered)
+    if not filtered:
+        return None
+    logger.info("TEXT_TO_SQL:validate_llm unnecessary tables found, retrying with filtered context")
+    return {
+        "selected_tables": filtered,
+        "table_context": new_context,
+        "verdict": "SQL_BAD",
+        "feedback_to_sql": "불필요한 테이블을 제외하고 다시 작성하세요.",
+        "failed_queries": failed_queries,
+        "validation_retry_count": state.get("validation_retry_count", 0) + 1,
+        "total_loops": state.get("total_loops", 0) + 1,
+    }
+
+
+def _handle_data_missing_override(
+    verdict: str,
+    feedback: str,
+    state: TextToSQLState,
+    current_sql: str,
+    failed_queries: list[str],
+) -> tuple[str, str, list[str]]:
+    if verdict != "DATA_MISSING":
+        return verdict, feedback, failed_queries
+
+    question = state.get("user_question", "").lower()
+    context = state.get("table_context", "").lower()
+
+    needs_ram = any(k in question for k in ["램", "ram", "메모리", "memory"])
+    needs_cpu = any(k in question for k in ["cpu", "시피유", "프로세서"])
+    needs_disk = any(k in question for k in ["디스크", "disk", "저장소"])
+
+    has_ram = "metrics_memory" in context
+    has_cpu = "metrics_cpu" in context
+    has_disk = "metrics_disk" in context
+
+    missing = []
+    if needs_ram and has_ram and "metrics_memory" not in current_sql:
+        missing.append("metrics_memory (RAM 지표)")
+    if needs_cpu and has_cpu and "metrics_cpu" not in current_sql:
+        missing.append("metrics_cpu (CPU 지표)")
+    if needs_disk and has_disk and "metrics_disk" not in current_sql:
+        missing.append("metrics_disk (디스크 지표)")
+
+    if missing:
+        verdict = "SQL_BAD"
+        feedback = (
+            f"제공된 스키마에 {', '.join(missing)} 테이블이 존재함에도 쿼리에 포함되지 않았습니다. "
+            "반드시 해당 테이블을 사용하여 지표를 산출하세요."
+        )
+        failed_queries = _append_failed_query(failed_queries, current_sql)
+
+    return verdict, feedback, failed_queries
+
+
+def _format_failed_feedback(feedback: str, hint: str) -> str:
+    full_feedback = f"### 이전 시도 실패 원인\n{feedback}\n"
+    if hint:
+        full_feedback += f"\n### 올바른 쿼리 예시 및 힌트\n{hint}\n"
+    return full_feedback
+
+
+async def validate_llm(state: TextToSQLState) -> dict:
+    # [역할] 최종 정합성 판단 및 Verdict 확정 (Node 9)
+    # [입력] user_question, generated_sql, sql_result, result_status, verdict(from Node 8)
+    # [출력] verdict, feedback_to_sql, validation_reason, failed_queries
+    status = state.get("result_status")
+    current_sql = state.get("generated_sql", "")
+    failed_queries = list(state.get("failed_queries", []) or [])
+
+    if status == "error":
+        verdict = state.get("verdict", "SQL_BAD")
+        logger.info("TEXT_TO_SQL:validate_llm skip (previous error status), verdict=%s", verdict)
+        if verdict == "SQL_BAD":
+            failed_queries = _append_failed_query(failed_queries, current_sql)
+        return {"failed_queries": failed_queries}
+
+    messages = _build_validation_messages(state, current_sql)
     response = await llm_smart.ainvoke(messages)
     parsed_json, error = parse_json_from_llm(response.content)
 
     if error or not parsed_json:
         logger.error("TEXT_TO_SQL:validate_llm parse_error=%s", error)
-        # 파싱 실패 시 단순 폴백
         verdict = "OK" if state.get("sql_result") else "DATA_MISSING"
         return {
             "verdict": verdict,
-            "validation_reason": "검증 파싱 실패",
+            "validation_reason": "검증 응답 파싱 실패",
         }
 
     verdict = parsed_json.get("verdict", "AMBIGUOUS")
@@ -821,74 +726,35 @@ async def validate_llm(state: TextToSQLState) -> dict:
     hint = parsed_json.get("correction_hint", "")
     unnecessary = parsed_json.get("unnecessary_tables", []) or []
 
-    failed_queries = list(state.get("failed_queries", []) or [])
-    current_sql = state.get("generated_sql", "")
-    if current_sql and current_sql not in failed_queries:
-        failed_queries.append(current_sql)
-        failed_queries = failed_queries[-3:]
+    if verdict == "SQL_BAD":
+        failed_queries = _append_failed_query(failed_queries, current_sql)
 
-    if unnecessary:
-        current_tables = list(state.get("selected_tables", []) or [])
-        filtered = [t for t in current_tables if t not in unnecessary]
-        candidates = state.get("table_candidates", []) or []
-        _, new_context = rebuild_context_from_candidates(candidates, filtered)
-        if filtered:
-            return {
-                "selected_tables": filtered,
-                "table_context": new_context,
-                "verdict": "SQL_BAD",
-                "feedback_to_sql": "불필요한 테이블을 제외하고 다시 작성하세요.",
-                "failed_queries": failed_queries,
-                "validation_retry_count": state.get("validation_retry_count", 0) + 1,
-                "total_loops": state.get("total_loops", 0) + 1,
-            }
+    unnecessary_result = _handle_unnecessary_tables(state, unnecessary, failed_queries)
+    if unnecessary_result:
+        return unnecessary_result
 
-    if verdict == "DATA_MISSING":
-        question = state.get("user_question", "").lower()
-        context = state.get("table_context", "").lower()
-        
-        # 보정 로직 상세화
-        needs_ram = any(k in question for k in ["램", "ram", "메모리", "memory"])
-        needs_cpu = any(k in question for k in ["cpu", "시피유", "프로세서"])
-        needs_disk = any(k in question for k in ["디스크", "disk", "저장소"])
-        
-        has_ram = "metrics_memory" in context
-        has_cpu = "metrics_cpu" in context
-        has_disk = "metrics_disk" in context
-
-        missing = []
-        if needs_ram and has_ram and "metrics_memory" not in current_sql:
-            missing.append("metrics_memory (RAM 지표)")
-        if needs_cpu and has_cpu and "metrics_cpu" not in current_sql:
-            missing.append("metrics_cpu (CPU 지표)")
-        if needs_disk and has_disk and "metrics_disk" not in current_sql:
-            missing.append("metrics_disk (디스크 지표)")
-
-        if missing:
-            verdict = "SQL_BAD"
-            feedback = f"제공된 스키마에 {', '.join(missing)} 테이블이 존재함에도 쿼리에 포함되지 않았습니다. 반드시 해당 테이블을 사용하여 지표를 산출하세요."
+    verdict, feedback, failed_queries = _handle_data_missing_override(
+        verdict, feedback, state, current_sql, failed_queries
+    )
 
     if verdict != "OK":
-        # 피드백을 [이유]와 [개선 예시]로 구조화하여 에이전트 전달
-        full_feedback = f"### 이전 시도 실패 원인\n{feedback}\n"
-        if hint:
-            full_feedback += f"\n### 올바른 쿼리 예시 및 힌트\n{hint}\n"
-            
-        logger.info("TEXT_TO_SQL:validate_llm verdict=%s feedback=%s", verdict, feedback)
+        full_feedback = _format_failed_feedback(feedback, hint)
+        logger.info("TEXT_TO_SQL:validate_llm failed, verdict=%s", verdict)
         return {
             "verdict": verdict,
             "feedback_to_sql": full_feedback,
-            "validation_reason": feedback, # 요약된 이유
+            "validation_reason": feedback,
             "failed_queries": failed_queries,
             "validation_retry_count": state.get("validation_retry_count", 0) + 1,
             "total_loops": state.get("total_loops", 0) + 1,
         }
 
-
+    logger.info("TEXT_TO_SQL:validate_llm OK")
     return {
         "verdict": "OK",
         "validation_reason": "",
         "feedback_to_sql": "",
+        "failed_queries": failed_queries,
     }
 
 

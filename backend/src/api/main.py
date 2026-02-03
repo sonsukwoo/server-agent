@@ -311,23 +311,18 @@ async def get_resource_summary():
     try:
         async with postgres_client() as client:
             result_raw = await client.call_tool("execute_sql", {"query": sql})
-            logger.info("RESOURCE_SUMMARY: raw result from MCP: [%s]", result_raw)
-            
             if not result_raw:
-                logger.warning("RESOURCE_SUMMARY: empty result from MCP")
                 return {}
             
             try:
                 result = json.loads(result_raw)
             except json.JSONDecodeError as je:
-                logger.error("RESOURCE_SUMMARY: JSON decode error: %s | data: %s", je, result_raw)
                 return {}
 
             if result and isinstance(result, list):
                 return result[0]
             return {}
     except Exception as e:
-        logger.error("RESOURCE_SUMMARY_TOTAL_ERROR: %s", e)
         return {}
 
 if __name__ == "__main__":
