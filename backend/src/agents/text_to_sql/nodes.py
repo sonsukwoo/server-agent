@@ -440,11 +440,130 @@ async def generate_sql(state: TextToSQLState) -> dict:
     # 2. 메시지 생성
     messages = _build_generate_sql_messages(inputs)
 
-    # 3. LLM 호출
-    response = await llm_smart.ainvoke(messages)
+    # 3. LLM 호출 및 툴 확장 (최대 1회 재시도 루프)
+    loop_count = 0
+    max_loops = 2
     
-    logger.info("TEXT_TO_SQL:generate_sql done")
-    return {"generated_sql": response.content.strip(), "sql_guard_error": ""}
+    current_state = state.copy()  # 로컬 상태 복사
+    last_tool_usage_log = None  # 툴 사용 로그 임시 저장
+
+    while loop_count < max_loops:
+        loop_count += 1
+        response = await llm_smart.ainvoke(messages)
+        parsed, error = parse_json_from_llm(response.content)
+
+        # JSON 파싱 실패 시, 원본 텍스트를 SQL로 간주하고 시도 (Fallback)
+        if error or not parsed:
+            logger.warning("TEXT_TO_SQL:generate_sql JSON parse failed, assuming raw SQL. Error: %s", error)
+            # 마크다운 제거 정도만 수행
+            raw_sql = response.content.strip()
+            # 간단한 정규화 시도
+            try:
+                normalized = normalize_sql(raw_sql)
+                return {"generated_sql": normalized, "sql_guard_error": ""}
+            except ValueError:
+                # 정규화 실패 시 그냥 반환하여 guard_sql에서 처리
+                return {"generated_sql": raw_sql, "sql_guard_error": ""}
+
+        needs_tables = parsed.get("needs_more_tables", False)
+        sql_text = parsed.get("sql", "")
+
+        # A. 테이블 확장 요청
+        if needs_tables:
+            # 이미 확장 실패 경험이 있다면 -> 무시하고 SQL 반환 (혹은 Fallback 시도)
+            if current_state.get("table_expand_failed"):
+                logger.info("TEXT_TO_SQL:generate_sql expand requested but already failed. Using generated SQL.")
+                # LLM이 fallback SQL을 줬으면 그것 사용
+                if sql_text:
+                     break # 루프 종료하고 결과 반환
+                
+                # 만약 SQL도 비어있다면 Force Generation 요청 처리 (다음 루프에서 해결되길 기대)
+                # 여기서는 명시적으로 실패 로그 남기고 빈 SQL 반환 가능성 있음
+                break
+
+            # 확장 시도
+            logger.info("TEXT_TO_SQL:generate_sql Triggering tool: expand_tables")
+            
+            candidates = current_state.get("table_candidates", []) or []
+            offset = current_state.get("candidate_offset", TOP_K)
+            selected = list(current_state.get("selected_tables", []) or [])
+            
+            new_selected, new_context, new_offset = expand_tables_tool(selected, candidates, offset)
+            
+            # 확장 결과 확인
+            if new_offset > offset:
+                # 성공
+                added_count = new_offset - offset
+                tool_msg = f"테이블 확장 툴 실행 (추가됨: {new_selected[-added_count:]})"
+                logger.info(tool_msg)
+                last_tool_usage_log = tool_msg
+                
+                # 상태 갱신
+                current_state["selected_tables"] = new_selected
+                current_state["table_context"] = new_context
+                current_state["candidate_offset"] = new_offset
+                current_state["table_expand_attempted"] = True
+                
+                # 다음 루프를 위해 inputs/messages 재생성
+                inputs["table_name"] = ", ".join(new_selected)
+                inputs["columns"] = new_context
+                inputs["_meta_table_count"] = len(new_selected)
+                messages = _build_generate_sql_messages(inputs)
+                
+                continue
+                
+            else:
+                # 실패 (더 이상 후보 없음)
+                logger.info("TEXT_TO_SQL:generate_sql expand requested but no candidates.")
+                
+                fail_msg = "테이블 확장 시도했으나 추가 후보 없음"
+                last_tool_usage_log = fail_msg
+
+                current_state["table_expand_failed"] = True
+                current_state["table_expand_attempted"] = True
+                
+                # 프롬프트에 알림
+                inputs["validation_reason"] += f"\n(시스템 알림: {fail_msg}. 현재 정보로 진행하세요.)"
+                messages = _build_generate_sql_messages(inputs)
+                
+                continue
+
+        # B. 정상 반환 (SQL 생성됨)
+        break
+
+    # 루프 종료 후 결과 구성
+    # 마지막 루프의 sql_text 사용 (JSON 파싱 성공 시)
+    # 파싱된 sql_text가 없으면(확장하다가 루프 끝난 경우 등) 빈 문자열일 수 있음
+    
+    # 마지막 응답이 JSON이 아니었거나 에러였으면 위에서 처리됨.
+    # 여기까지 왔다는 건 'JSON 파싱 성공' AND ('needs_tables=False' OR '확장 실패 후 break')
+    
+    # 안전장치: sql_text가 없을 수 있음 (루프 한도 초과 등)
+    if not sql_text and loop_count >= max_loops:
+         sql_text = ""
+         state_error = "Generating SQL Loop Limit exceeded"
+    else:
+         state_error = ""
+
+    result_update = {
+        "generated_sql": sql_text, 
+        "sql_guard_error": state_error,
+    }
+    
+    # 변경된 상태 반영
+    keys_to_update = [
+        "table_expand_attempted", "table_expand_failed", 
+        "selected_tables", "table_context", "candidate_offset"
+    ]
+    for k in keys_to_update:
+        if k in current_state:
+            result_update[k] = current_state[k]
+
+    # 툴 사용 로그
+    if last_tool_usage_log:
+        result_update["last_tool_usage"] = last_tool_usage_log
+
+    return result_update
 
 
 # ─────────────────────────────────────────
@@ -743,6 +862,15 @@ async def validate_llm(state: TextToSQLState) -> dict:
 
     # C. TABLE_MISSING 처리 (내부 툴 호출로 테이블 확장)
     if verdict == "TABLE_MISSING":
+        # 이미 이전에 확장 실패했다면 바로 데이터 없음 처리
+        if state.get("table_expand_failed"):
+            logger.info("TEXT_TO_SQL:validate_llm TABLE_MISSING but already failed to expand previously.")
+            verdict = "DATA_MISSING"
+            return {
+                "verdict": verdict,
+                "validation_reason": "추가 테이블을 찾을 수 없습니다 (확장 실패)",
+                "failed_queries": failed_queries,
+            }
         candidates = state.get("table_candidates", []) or []
         current_offset = state.get("candidate_offset", TOP_K)
         selected = list(state.get("selected_tables", []) or [])
@@ -800,7 +928,7 @@ async def validate_llm(state: TextToSQLState) -> dict:
 
 
 # ─────────────────────────────────────────
-# Node 11: generate_report
+# Node 10: generate_report
 # ─────────────────────────────────────────
 
 async def generate_report(state: TextToSQLState) -> dict:
@@ -819,6 +947,11 @@ async def generate_report(state: TextToSQLState) -> dict:
     ]
     response = await llm_fast.ainvoke(messages)
     report = response.content.strip()
+
+    # 테이블 확장 실패 시 경고 문구 추가
+    if state.get("table_expand_failed"):
+        warning_msg = "\n\n> ⚠️ **주의**: 분석에 필요한 테이블이 일부 누락되었을 수 있어, 결과가 제한적일 수 있습니다."
+        report += warning_msg
 
     suggested_actions = []
     for line in report.splitlines():

@@ -64,6 +64,12 @@ class TextToSQLState(TypedDict, total=False):
     verdict: Verdict
     validation_reason: str
     feedback_to_sql: str
+    last_tool_usage: Optional[str]  # 프론트엔드 표시용 마지막 툴 사용 로그
+
+    # 확장 상태 (generate_sql 내 툴 호출용)
+    table_expand_attempted: bool
+    table_expand_failed: bool
+    table_expand_reason: Optional[str]
 
     # 루프 카운터
     sql_retry_count: int

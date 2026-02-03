@@ -54,6 +54,19 @@ GENERATE_SQL_SYSTEM = """
 - 특정 시점에 값이 없을 수 있는 보조 테이블은 LEFT JOIN을 사용하고, 필터 조건은 WHERE가 아니라 JOIN 조건에 넣어 결과가 비지 않게 한다.
 - 가능한 경우 결과 컬럼에 시간 컬럼(ts 등)을 포함한다.
 - 지정된 시각의 정확한 시간이 없을 수 있으니 ±1분 범위를 고려하라.
+- **테이블 정보 부족 시**:
+  - 만약 질문에 답하기 위해 필요한 테이블이 현재 컨텍스트(`table_context`)에 없다면, 억지로 SQL을 만들지 말고 `needs_more_tables: true`를 반환하라.
+  - 단, 이미 한 번 확장을 시도했는데도 여전히 없다면(`table_expand_failed` 상태 등), 있는 테이블만으로 최대한 근사치 SQL을 작성하라.
+
+반드시 **JSON 형식**으로 출력한다.
+```json
+{
+  "sql": "SELECT ...",
+  "needs_more_tables": false
+}
+```
+- `needs_more_tables`: true이면 SQL 필드는 비워도 된다.
+- `sql`: 실행 가능한 SQL 쿼리 (마크다운 없이 문자열).
 
 """.strip()
 

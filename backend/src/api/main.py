@@ -252,6 +252,9 @@ async def query(body: QueryRequest):
                 "verdict": "OK",
                 "result_status": "unknown",
                 "failed_queries": [],
+                "table_expand_attempted": False,
+                "table_expand_failed": False,
+                "table_expand_reason": None,
             }
             
             last_reason = ""
@@ -281,6 +284,12 @@ async def query(body: QueryRequest):
                                     status_msg = f"오류 복구 및 SQL 재작성 중... [재시도 {current_retry}]"
                             
                             yield f"data: {json.dumps({'type': 'status', 'message': status_msg, 'node': node_name}, ensure_ascii=False)}\n\n"
+                        
+                        # 툴 사용 로그가 있으면 이벤트 전송
+                        tool_usage = output.get("last_tool_usage")
+                        if tool_usage:
+                            tool_msg = f"🛠️ [툴 사용] {tool_usage}"
+                            yield f"data: {json.dumps({'type': 'status', 'message': tool_msg, 'node': node_name}, ensure_ascii=False)}\n\n"
                         
                         # 마지막 결과인 경우 전체 데이터 전송
                         if node_name == "generate_report":
