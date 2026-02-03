@@ -22,8 +22,8 @@ LangGraph + HTTP MCP + Qdrant 기반의 AI 에이전트 시스템입니다.
 
 ```mermaid
 graph TD
-    User[User] -->|Query| API[Server Agent API (FastAPI)]
-    API -->|Run Graph| Agent[Text-to-SQL Agent (LangGraph)]
+    User[User] -->|Query| API["Server Agent API (FastAPI)"]
+    API -->|Run Graph| Agent["Text-to-SQL Agent (LangGraph)"]
     
     subgraph "Agent Workflow"
         Parse[Parse Request] --> ValidateReq[Validate Request]
