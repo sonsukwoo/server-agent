@@ -9,6 +9,7 @@ import logging
 from config.settings import settings
 from src.agents.mcp_clients.connector import postgres_client, qdrant_search_client
 from src.agents.text_to_sql.middleware.parsed_request_guard import ParsedRequestGuard
+from .tools import expand_tables_tool
 
 logger = logging.getLogger("TEXT_TO_SQL")
 
@@ -206,7 +207,8 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
 
     return {
         "table_candidates": filtered,
-        "candidate_offset": len(filtered),
+        # 확장은 select_tables에서 실제 선택 개수 기준으로 설정
+        "candidate_offset": 0,
     }
 
 
@@ -358,6 +360,8 @@ async def select_tables(state: TextToSQLState) -> dict:
     return {
         "selected_tables": selected_names,
         "table_context": table_context,
+        # 확장 시작점은 현재 선택된 개수 기준
+        "candidate_offset": len(selected_objects),
     }
 
 
@@ -737,6 +741,41 @@ async def validate_llm(state: TextToSQLState) -> dict:
         verdict, feedback, state, current_sql, failed_queries
     )
 
+    # C. TABLE_MISSING 처리 (내부 툴 호출로 테이블 확장)
+    if verdict == "TABLE_MISSING":
+        candidates = state.get("table_candidates", []) or []
+        current_offset = state.get("candidate_offset", TOP_K)
+        selected = list(state.get("selected_tables", []) or [])
+        
+        # 툴 호출
+        new_selected, new_context, new_offset = expand_tables_tool(
+            selected, candidates, current_offset
+        )
+        
+        # 확장 성공 여부 확인 (Offset이 안 늘어났거나, 테이블이 안 늘어났거나)
+        if new_offset <= current_offset:
+            # 더 이상 확장할 게 없으면 실패 처리
+            logger.info("TEXT_TO_SQL:validate_llm TABLE_MISSING but no more tables to expand")
+            verdict = "DATA_MISSING"  # 확장 불가 -> 데이터 없음으로 종결
+            return {
+                "verdict": verdict,
+                "validation_reason": "추가 후보 테이블이 없습니다",
+                "failed_queries": failed_queries,
+            }
+        else:
+            # 확장 성공 -> 재시도 (Node 5로 이동 유도)
+            logger.info("TEXT_TO_SQL:validate_llm expanded tables: %s", new_selected)
+            return {
+                "selected_tables": new_selected,
+                "table_context": new_context,
+                "candidate_offset": new_offset,
+                "verdict": "RETRY_SQL", # 그래프에서 generate_sql로 라우팅
+                "validation_reason": "테이블 정보 부족으로 컨텍스트 확장",
+                "failed_queries": failed_queries,
+                "table_expand_count": state.get("table_expand_count", 0) + 1,
+                "total_loops": state.get("total_loops", 0) + 1,
+            }
+
     if verdict != "OK":
         full_feedback = _format_failed_feedback(feedback, hint)
         logger.info("TEXT_TO_SQL:validate_llm failed, verdict=%s", verdict)
@@ -758,35 +797,6 @@ async def validate_llm(state: TextToSQLState) -> dict:
     }
 
 
-# ─────────────────────────────────────────
-# Node 10: expand_tables
-# ─────────────────────────────────────────
-
-async def expand_tables(state: TextToSQLState) -> dict:
-    # [역할] TABLE_MISSING 시 캐시된 후보에서 추가 테이블 확장
-    # [입력] table_candidates, candidate_offset, selected_tables
-    # [출력] selected_tables, table_context, candidate_offset
-    candidates = state.get("table_candidates", []) or []
-    offset = state.get("candidate_offset", TOP_K)
-
-    batch = next_batch(candidates, offset)
-    if not batch:
-        return {
-            "verdict": "DATA_MISSING",
-            "validation_reason": "추가 후보 테이블이 없습니다",
-        }
-
-    selected_names = list(state.get("selected_tables", []) or [])
-    selected_tables = [t for t in candidates if t["table_name"] in selected_names]
-    selected_tables.extend(batch)
-
-    return {
-        "selected_tables": [t["table_name"] for t in selected_tables],
-        "table_context": build_table_context(selected_tables),
-        "candidate_offset": offset + len(batch),
-        "table_expand_count": state.get("table_expand_count", 0) + 1,
-        "total_loops": state.get("total_loops", 0) + 1,
-    }
 
 
 # ─────────────────────────────────────────

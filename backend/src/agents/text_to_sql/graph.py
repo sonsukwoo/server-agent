@@ -12,7 +12,6 @@ from .nodes import (
     execute_sql,
     normalize_result,
     validate_llm,
-    expand_tables,
     generate_report,
 )
 from .constants import (
@@ -59,9 +58,9 @@ def verdict_route(state: TextToSQLState) -> str:
             return "retry_sql"
         return "fail"
 
-    if verdict == "TABLE_MISSING":
-        if state.get("table_expand_count", 0) < MAX_TABLE_EXPAND:
-            return "expand_tables"
+    if verdict == "RETRY_SQL":
+        if state.get("table_expand_count", 0) <= MAX_TABLE_EXPAND: # count is incremented in node
+             return "retry_sql"
         return "fail"
 
     if verdict in ("DATA_MISSING", "AMBIGUOUS", "PERMISSION", "TIMEOUT", "DB_CONN_ERROR"):
@@ -83,7 +82,6 @@ def build_text_to_sql_graph() -> StateGraph:
     workflow.add_node("execute_sql", execute_sql)
     workflow.add_node("normalize_result", normalize_result)
     workflow.add_node("validate_llm", validate_llm)
-    workflow.add_node("expand_tables", expand_tables)
     workflow.add_node("generate_report", generate_report)
 
     # 엔트리 포인트
@@ -132,13 +130,9 @@ def build_text_to_sql_graph() -> StateGraph:
         {
             "ok": "generate_report",
             "retry_sql": "generate_sql",
-            "expand_tables": "expand_tables",
             "fail": "generate_report",
         },
     )
-
-    # TABLE_MISSING 확장 후 SQL 재생성으로 루프
-    workflow.add_edge("expand_tables", "generate_sql")
     workflow.add_edge("generate_report", END)
 
     return workflow
