@@ -82,7 +82,7 @@ server-agent/
 ```ini
 # Database
 DB_HOST=host.docker.internal
-DB_PORT=5432
+DB_PORT=
 DB_NAME=your_db
 DB_USER=your_user
 DB_PASSWORD=your_password
@@ -91,7 +91,7 @@ DB_PASSWORD=your_password
 OPENAI_API_KEY=sk-...
 
 # Qdrant (External)
-QDRANT_URL=http://your-qdrant-host:6333
+QDRANT_URL=
 QDRANT_API_KEY=
 
 # MCP Settings (Automatic)
