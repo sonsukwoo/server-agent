@@ -108,6 +108,7 @@ graph TD
 
     %% Tool Call Highlight
     subgraph "Tools & Metadata"
+        direction TB
         T1["🔍 search_tables (Qdrant)"]
         T2["🔗 expand_tables (Internal)"]
         T3["🚀 execute_sql (Postgres)"]
