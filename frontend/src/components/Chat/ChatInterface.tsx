@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Plus, MessageSquare, Bot, Trash2 } from 'lucide-react';
+import { Send, Plus, MessageSquare, Bot, Trash2, Square } from 'lucide-react';
 import { MessageBubble } from './MessageBubble';
 import { ApiClient } from '../../api/client';
 import { ResourceDashboard } from '../Dashboard/ResourceDashboard';
@@ -13,6 +13,7 @@ export const ChatInterface: React.FC = () => {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const currentSessionIdRef = useRef<string | null>(null);
+    const abortControllerRef = useRef<AbortController | null>(null);
 
     // API Client Instance
     const apiClient = new ApiClient();
@@ -135,20 +136,19 @@ export const ChatInterface: React.FC = () => {
         updateSessionState(activeSessionId, { isLoading: true, status: '사용자 질문 분석 중...' });
         const capturedLogs: string[] = ['사용자 질문 분석 중...'];
 
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
         try {
-            // Note: query is static or instance? Check ApiClient definition.
-            // If query is static, use ApiClient.query. If instance, use apiClient.query.
-            // Based on previous edit, query was static. Let's check if I changed it.
-            // I changed query to static in previous edit? No, I kept it static in the replacement content?
-            // Wait, looking at step 476 replacement:
-            // "static async query..." is present.
-            // So query is STATIC.
             const result = await ApiClient.query(userQuestion, activeSessionId, (newStatus) => {
                 updateSessionState(activeSessionId, { status: newStatus });
                 if (capturedLogs[capturedLogs.length - 1] !== newStatus) {
                     capturedLogs.push(newStatus);
                 }
-            });
+            }, controller.signal);
 
             const assistantMsg = {
                 role: 'assistant',
@@ -170,15 +170,34 @@ export const ChatInterface: React.FC = () => {
             apiClient.saveMessage(activeSessionId, 'assistant', assistantMsg.text, payload).catch(console.error);
             refreshSessions().catch(console.error);
         } catch (error) {
-            console.error('Failed to query:', error);
-            if (currentSessionIdRef.current === activeSessionId) {
-                setMessages(prev => [...prev, {
-                    role: 'assistant',
-                    text: `죄송합니다. 오류가 발생했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`
-                }]);
+            if (error instanceof Error && error.name === 'AbortError') {
+                console.log('Query aborted');
+                if (currentSessionIdRef.current === activeSessionId) {
+                    setMessages(prev => [...prev, {
+                        role: 'assistant',
+                        text: '요청이 중단되었습니다.',
+                        logs: [...capturedLogs, '사용자에 의해 중단됨']
+                    }]);
+                }
+            } else {
+                console.error('Failed to query:', error);
+                if (currentSessionIdRef.current === activeSessionId) {
+                    setMessages(prev => [...prev, {
+                        role: 'assistant',
+                        text: `죄송합니다. 오류가 발생했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`
+                    }]);
+                }
             }
         } finally {
             updateSessionState(activeSessionId, { isLoading: false, status: '' });
+            abortControllerRef.current = null;
+        }
+    };
+
+    const handleStop = () => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
         }
     };
 
@@ -307,13 +326,24 @@ export const ChatInterface: React.FC = () => {
                             onKeyDown={handleKeyDown}
                             rows={1}
                         />
-                        <button
-                            type="submit"
-                            className="send-button"
-                            disabled={!inputValue.trim() || isLoading}
-                        >
-                            <Send size={16} />
-                        </button>
+                        {isLoading ? (
+                            <button
+                                type="button"
+                                className="stop-button"
+                                onClick={handleStop}
+                                title="Stop generation"
+                            >
+                                <Square size={16} fill="currentColor" />
+                            </button>
+                        ) : (
+                            <button
+                                type="submit"
+                                className="send-button"
+                                disabled={!inputValue.trim()}
+                            >
+                                <Send size={16} />
+                            </button>
+                        )}
                     </form>
                     <p style={{ textAlign: 'center', fontSize: '12px', color: 'var(--text-secondary)', marginTop: '12px' }}>
                         Text-to-SQL Agent can make mistakes. Check important info.

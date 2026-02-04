@@ -52,13 +52,15 @@ export class ApiClient {
     static async query(
         question: string,
         sessionId?: string,
-        onStatus?: (status: string) => void
+        onStatus?: (status: string) => void,
+        signal?: AbortSignal
     ): Promise<QueryResponse> {
         const response = await fetch(`${API_BASE_URL}/query`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
+            signal,
             body: JSON.stringify({
                 agent: 'sql',
                 question,

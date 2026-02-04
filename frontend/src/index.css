@@ -235,6 +235,26 @@ body {
   cursor: not-allowed;
 }
 
+.stop-button {
+  background-color: var(--bg-primary);
+  color: #ef4444;
+  /* Red color */
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.stop-button:hover {
+  background-color: rgba(239, 68, 68, 0.1);
+  border-color: #ef4444;
+}
+
 /* Message Bubbles */
 .message {
   display: flex;

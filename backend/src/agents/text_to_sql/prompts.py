@@ -58,6 +58,7 @@ GENERATE_SQL_SYSTEM = """
 - 사용자의 질문이 이전 결과/기록을 참조(예: "여기서", "그 시점", "이전 결과 기준")한다면,
   이전 기록에 포함된 시간/조건을 반드시 계승해서 SQL에 반영하라.
   이전 기록에 시간/조건이 없다면, 임의로 추정하지 말고 가장 보수적으로 해석하라.
+- 추가 제약(사용자의 수정 지시)이 제공되면 최우선으로 반영하라.
 - **테이블 정보 부족 시**:
   - 만약 질문에 답하기 위해 필요한 테이블이 현재 컨텍스트(`table_context`)에 없다면, 억지로 SQL을 만들지 말고 `needs_more_tables: true`를 반환하라.
   - 단, 이미 한 번 확장을 시도했는데도 여전히 없다면(`table_expand_failed` 상태 등), 있는 테이블만으로 최대한 근사치 SQL을 작성하라.
@@ -81,6 +82,7 @@ GENERATE_SQL_USER = """
 시간 범위: {time_start} ~ {time_end}
 메트릭: {metric}
 조건: {condition}
+추가 제약(수정 지시): {user_constraints}
 
 사용 가능한 테이블:
 {table_name}
@@ -113,6 +115,10 @@ VALIDATE_RESULT_SYSTEM = """
    - 이전 기록의 시간/조건이 SQL에 반영되었는지 반드시 확인한다.
    - 반영되지 않았다면 verdict="SQL_BAD"로 판단하고,
      feedback_to_sql에 누락된 시간/조건을 구체적으로 지적하라.
+9) 추가 제약(사용자의 수정 지시)이 제공된 경우,
+   - 해당 제약이 SQL에 반영되었는지 반드시 확인한다.
+   - 반영되지 않았다면 verdict="SQL_BAD"로 판단하고,
+     feedback_to_sql에 누락된 제약을 구체적으로 지적하라.
 
 반드시 JSON만 출력한다.
 필드:
@@ -125,6 +131,7 @@ VALIDATE_RESULT_SYSTEM = """
 VALIDATE_RESULT_USER = """
 사용자 질문(원문): {user_question}
 시간 범위: {time_start} ~ {time_end}
+추가 제약(수정 지시): {user_constraints}
 
 SQL:
 {generated_sql}
@@ -145,13 +152,15 @@ GENERATE_REPORT_SYSTEM = """
 1) **실행된 SQL**: '사용한 SQL 쿼리' 등의 제목 아래에 제공된 SQL을 포함하라.
 2) **결과 요약**: 결과 데이터의 핵심 수치와 트렌드만 요약하라.
 3) **샘플 데이터 표시 금지**: 결과 표(DataTable)는 UI가 별도로 제공하므로, 보고서 본문(텍스트)에 샘플 데이터를 나열하거나 텍스트 표를 만들지 마라.
-4) **결론 및 제안**: 데이터의 의미와 후속 작업을 명확히 제시하라.
+4) **작업 근거**: 시간 범위/필터/추가 제약 등 적용한 기준을 1~2문장으로 명시하라.
+5) **결론 및 제안**: 데이터의 의미와 후속 작업을 명확히 제시하라.
 """.strip()
 
 
 GENERATE_REPORT_USER = """
 사용자 질문: {user_question}
 결과 상태: {result_status}
+추가 제약(수정 지시): {user_constraints}
 
 실행된 SQL:
 {generated_sql}

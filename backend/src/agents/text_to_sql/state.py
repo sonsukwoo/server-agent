@@ -40,6 +40,7 @@ class TextToSQLState(TypedDict, total=False):
 
     # 입력
     user_question: str
+    user_constraints: Optional[str]
 
     # 파싱
     parsed_request: ParsedRequest

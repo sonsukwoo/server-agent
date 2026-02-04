@@ -16,6 +16,7 @@ from src.agents.text_to_sql.chat_context import (
     get_chat_context,
     run_background_summarization,
 )
+from src.agents.router import classify_intent, build_explain_report, extract_constraints
 
 logger = logging.getLogger("API_QUERY")
 
@@ -48,12 +49,13 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail=error)
 
     # 사용자 질문에 컨텍스트 결합 (Agent에게는 하나의 긴 질문처럼 보임)
-    full_question = question
+    base_full_question = question
+    context_prefix = ""
     if session_id:
         try:
             context_prefix = await get_chat_context(session_id)
             if context_prefix:
-                full_question = f"{context_prefix}\n{question}"
+                base_full_question = f"{context_prefix}\n{question}"
         except Exception:
             logger.exception("Failed to load chat context; proceeding without it.")
 
@@ -74,8 +76,78 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
 
     async def event_generator():
         if agent_type == "sql":
+            # 라우팅: SQL 실행 vs 설명형 응답
+            try:
+                routing = await classify_intent(question, context_prefix)
+            except Exception:
+                logger.exception("Router failed; fallback to needs_sql.")
+                routing = {"intent": "needs_sql", "reason": "fallback"}
+            logger.info(
+                "QUERY_ROUTER: intent=%s reason=%s question=%s",
+                routing.get("intent"),
+                routing.get("reason"),
+                question,
+            )
+
+            if routing.get("intent") == "explain":
+                yield f"data: {json.dumps({'type': 'status', 'message': '설명 생성 중', 'node': 'route_explain'}, ensure_ascii=False)}\n\n"
+                report = await build_explain_report(question, context_prefix)
+                final_data = {
+                    "ok": True,
+                    "agent": "sql",
+                    "data": {
+                        "report": report,
+                        "suggested_actions": [],
+                        "raw": {
+                            "route": "explain",
+                            "reason": routing.get("reason", "")
+                        }
+                    }
+                }
+                yield f"data: {json.dumps({'type': 'result', 'payload': final_data}, ensure_ascii=False)}\n\n"
+                if session_id:
+                    background_tasks.add_task(run_background_summarization, session_id)
+                return
+
+            if routing.get("intent") == "clarifying":
+                message = routing.get("reason") or "기간/지표/조건 등 추가 정보가 필요합니다."
+                report = f"질문이 모호합니다. 구체적으로 알려주세요: {message}"
+                final_data = {
+                    "ok": True,
+                    "agent": "sql",
+                    "data": {
+                        "report": report,
+                        "suggested_actions": [],
+                        "raw": {
+                            "route": "clarifying",
+                            "reason": routing.get("reason", "")
+                        }
+                    }
+                }
+                yield f"data: {json.dumps({'type': 'result', 'payload': final_data}, ensure_ascii=False)}\n\n"
+                if session_id:
+                    background_tasks.add_task(run_background_summarization, session_id)
+                return
+
+            # 수정 지시(제약) 추출
+            user_constraints = ""
+            try:
+                constraint_result = await extract_constraints(question, context_prefix)
+                user_constraints = (constraint_result.get("constraints") or "").strip()
+            except Exception:
+                logger.exception("Constraint extraction failed; proceed without constraints.")
+
+            full_question = base_full_question
+            if user_constraints:
+                constraint_block = f"[추가 제약]\\n{user_constraints}\\n"
+                if context_prefix:
+                    full_question = f"{context_prefix}\\n{constraint_block}{question}"
+                else:
+                    full_question = f"{constraint_block}{question}"
+
             initial_state = {
                 "user_question": full_question,
+                "user_constraints": user_constraints,
                 "sql_retry_count": 0,
                 "table_expand_count": 0,
                 "validation_retry_count": 0,

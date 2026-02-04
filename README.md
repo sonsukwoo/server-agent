@@ -36,11 +36,13 @@
     - Top-5에 들지 못한 나머지 후보 테이블들은 내부 캐시에 안전하게 보관합니다.
     - 쿼리 생성이나 검증 단계에서 "테이블 정보가 부족하다"고 판단될 경우, 에이전트가 스스로 **툴 콜(Tool Call)**을 수행하여 캐시된 후보들 중 필요한 테이블을 추가로 탐색하고 컨텍스트를 확장합니다.
 
-### 5. 📂 지속성 채팅 이력 (Persistent Chat History)
-사용자와의 모든 대화 결과는 데이터베이스에 안전하게 기록됩니다.
-- **세션 기반 관리**: 채팅별 세션 관리를 통해 이전 대화 맥락을 유지하고 나중에 다시 확인할 수 있습니다.
-- **자동 제목 생성**: 대화의 첫 문장을 분석하여 채팅 세션의 제목을 자동으로 설정합니다.
-- **효율적인 상태 관리**: 메시지 유실 방지를 위한 트랜잭션 기반 저장 구조를 갖추고 있습니다.
+### 5. 🧠 맥락 인식 채팅 메모리 및 최적화 (Context-aware Memory)
+대화가 길어져도 시스템은 이전 맥락을 기억하며, 효율적인 토큰 관리를 수행합니다.
+- **장단기 기억 하이브리드 모드**:
+    - **단기 기억 (Recent Context)**: 가장 최근의 대화(최대 2~3턴)는 원문 그대로 유지하여 에이전트가 "그거 실행해줘"와 같은 지시어의 대상을 명확히 파악하게 합니다.
+    - **장기 기억 (Summarized History)**: 오래된 대화는 백그라운드에서 AI가 자동으로 요약하여 핵심 정보만 보존합니다. 이를 통해 무제한에 가까운 과거 맥락을 참조하면서도 토큰 비용을 최소화합니다.
+- **백그라운드 비동기 요약**: 사용자의 응답 대기 시간에 영향을 주지 않도록, 답변 완료 후 비동기(FastAPI BackgroundTasks)로 요약 엔진이 작동합니다.
+- **커서 기반 요약 갱신**: 요약 시점 이후의 새로운 메시지만 선별하여 요약을 업데이트하는 지능적인 커서 시스템을 통해 불필요한 연산을 방지합니다.
 
 ### 6. 📊 리소스 모니터링 대시보드
 - **실시간 지표**: CPU, 메모리, 디스크 사용량을 실시간으로 시각화합니다.
@@ -156,42 +158,39 @@ server-agent/
 │   ├── advanced_settings/   # 알림 조건(Lego Blocks) 기반 모니터링 모듈
 │   │   ├── schemas.py       # Pydantic 기반 데이터 검증 모델 (Rule/History)
 │   │   ├── templates.py     # SQL 기반 트리거 및 함수 생성용 템플릿
-│   │   ├── service.py       # 알림 규칙 관리 및 MCP 서버 통신 제어
-│   │   ├── listener.py      # DB NOTIFY 채널 실시간 수신 전용 리스너
-│   │   ├── router.py        # 규칙 CRUD 및 알림 이력 조회 API
-│   │   └── core.py          # 하위 호환성 유지를 위한 래퍼(Deprecated)
-│   ├── agents/              # 지능형 에이전트 및 통신 클라이언트
-│   │   ├── text_to_sql/     # Text-to-SQL 메인 워크플로우 (LangGraph)
+│   │   ├── service.py       # 알림 규칙 관리 서비스 Layer
+│   │   ├── listener.py      # DB NOTIFY 채널 실시간 수신 리스너
+│   │   └── router.py        # 규칙 CRUD 및 알림 이력 조회 API
+│   ├── agents/              # 지능형 에이전트 핵심 로직
+│   │   ├── text_to_sql/     # Text-to-SQL 워크플로우 (LangGraph)
 │   │   │   ├── graph.py     # 에이전트 상태 전이 및 그래프 구조 정의
-│   │   │   ├── nodes.py     # 파싱, 검색, 생성, 검증 등 핵심 노드 구현체
-│   │   │   ├── prompts.py   # 단계별 시스템/사용자 지능형 프롬프트 소스
-│   │   │   ├── state.py     # 에이전트 실행 중 유지되는 상태 정보(State) 정의
-│   │   │   └── table_expand_tool.py # 캐시 기반 테이블 정보 확장 도구
+│   │   │   ├── nodes.py     # 분석, 검색, 생성, 검증 등 핵심 노드 구현
+│   │   │   ├── prompts.py   # 단계별 시스템/사용자 프롬프트 관리
+│   │   │   ├── state.py     # 에이전트 실행 상태(State) 스키마 정의
+│   │   │   ├── chat_context.py # 에이전트용 채팅 맥락(Summary+Recent) 구성 엔진
+│   │   │   └── table_expand_too.py # 캐시 기반 테이블 정보 확장 도구
 │   │   └── mcp_clients/     # 외부 MCP 서버 통합 클라이언트
-│   │       └── connector.py # HTTP 프로토콜 기반 MCP 서버 연동 공통 모듈
+│   │       └── connector.py # HTTP 기반 MCP 서버 연동 공통 모듈
 │   ├── api/                 # FastAPI 웹 프레임워크 인프라
-│   │   ├── main.py          # 앱 진입점, 라우터 및 미들웨어 통합 등록
-│   │   ├── lifespan.py      # Startup/Shutdown 관리 (DB 초기화, 리스너 제어)
-│   │   ├── query.py         # 에이전트 질의 및 스트리밍 답변 API
-│   │   ├── chat.py          # 채팅 이력, 세션 관리 및 제목 자동 생성 API
-│   │   └── resource.py      # 실시간 서버 자원(CPU/MEM) 모니터링 API
+│   │   ├── main.py          # 앱 진입점 및 라우터 통합 등록
+│   │   ├── lifespan.py      # Startup/Shutdown 관리 (DB 초기화 등)
+│   │   ├── query.py         # 에이전트 질의 및 SSE 스트리밍 API
+│   │   ├── chat.py          # 채팅 세션 및 기록 관리 API
+│   │   └── resource.py      # 실시간 서버 자원 모니터링 API
 │   ├── db/                  # 데이터 저장소 액세스 레이어
-│   │   └── db_manager.py    # 커넥션 풀 초기화 및 채팅 기록 CRUD 총괄
+│   │   ├── db_manager.py    # 커넥션 풀 및 기본 DB 접근 총괄
+│   │   └── chat_context.py  # 채팅 요약 상태 및 커서 기반 데이터 접근 전용
 │   └── schema/              # 지능형 DB 스키마 관리 및 벡터화
-│       ├── orchestrator.py  # 초기 동기화 및 실시간 리스너 실행 제어
-│       ├── listener.py      # PostgreSQL DDL(스키마 변경) 이벤트 실시간 감지
-│       ├── sync.py          # 변경된 스키마를 벡터화하여 Qdrant 자동 반영
-│       ├── trigger_setup.py # 스키마 변경 감지를 위한 전용 트리거 자동 설치
-│       └── hash_utils.py    # 스키마 변경 여부(Diff)를 판별하는 해시 유틸리티
+│       ├── orchestrator.py  # 초기 동기화 및 감지 프로세스 제어
+│       ├── listener.py      # PostgreSQL DDL 이벤트 실시간 감지
+│       ├── sync.py          # 스키마 정보 추출 및 Qdrant 벡터화 동기화
+│       ├── trigger_setup.py # 변경 감지 전용 트리거 자동 설치
+│       └── hash_utils.py    # 스키마 변경 여부(Diff) 판별 해시 유틸
 ├── mcp_servers/             # 🔌 Standardized Tools (MCP 서버군)
-│   ├── postgres/            # DB 지능형 제어 서버 (SQL 실행, 스키마 추출)
-│   │   ├── server.py        # MCP 도구 정의 및 실행 로직
-│   │   └── Dockerfile       # 독립 실행형 컨테이너 설정
+│   ├── postgres/            # DB 지능형 제어 서버 (SQL 실행 등)
 │   └── qdrant/              # 벡터 검색 서버 (테이블 시맨틱 검색)
-│       ├── server.py        # Qdrant 검색 및 임베딩 도구 제공
-│       └── Dockerfile       # 독립 실행형 컨테이너 설정
 └── frontend/                # 📊 Dashboard (React + Vite)
-    ├── src/                 # 대시보드 UI 및 상태 관리 로직
+    ├── src/                 # 대시보드 UI 및 상태 관리 (TypeScript)
     └── index.html           # SPA 진입점
 ```
 
