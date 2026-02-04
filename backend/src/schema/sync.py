@@ -1,7 +1,5 @@
 """
 연결된 DB 스키마를 조회하고 Qdrant 임베딩 서버와 동기화하는 로직
-
-채팅 기록 테이블, 채팅 세션 테이블, 모니터링 테이블은 조회 제외
 """
 import json
 
@@ -33,7 +31,6 @@ async def sync_schema_embeddings_mcp() -> None:
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind IN ('r','p','v')
       AND n.nspname NOT IN ({excluded_str})
-      AND n.nspname NOT IN ('monitor', 'chat') -- [EXCLUDE] Alert system & Chat history from RAG
     ORDER BY n.nspname, c.relname;
     """
 
@@ -51,7 +48,6 @@ async def sync_schema_embeddings_mcp() -> None:
       AND NOT a.attisdropped
       AND c.relkind IN ('r','p','v')
       AND n.nspname NOT IN ({excluded_str})
-      AND n.nspname NOT IN ('monitor', 'chat') -- [EXCLUDE]
     ORDER BY n.nspname, c.relname, a.attnum;
     """
 
@@ -127,6 +123,7 @@ def _infer_primary_time(columns: list[dict]) -> str | None:
     return None
 
 
+
 def _infer_join_keys(columns: list[dict]) -> list[str]:
     keys: list[str] = []
     for col in columns:
@@ -142,4 +139,3 @@ def _infer_join_keys(columns: list[dict]) -> list[str]:
             seen.add(k)
             deduped.append(k)
     return deduped
-

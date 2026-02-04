@@ -1,3 +1,5 @@
+"""스키마 변경 감지 리스너."""
+
 import asyncio
 import logging
 import asyncpg

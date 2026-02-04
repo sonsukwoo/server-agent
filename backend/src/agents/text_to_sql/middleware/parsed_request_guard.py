@@ -1,3 +1,5 @@
+"""파싱된 요청 검증 미들웨어."""
+
 from datetime import datetime, timedelta
 import logging
 from typing import Tuple, Dict, Any

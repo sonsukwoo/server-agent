@@ -1,7 +1,9 @@
+"""테이블 후보 확장 로직(툴콜용)."""
+
 from typing import List, Dict, Any, Tuple
 import logging
 
-from .common.utils import build_table_context, rebuild_context_from_candidates
+from .common.utils import rebuild_context_from_candidates
 
 logger = logging.getLogger("TEXT_TO_SQL_TOOLS")
 
@@ -19,7 +21,7 @@ def expand_tables_tool(
         candidates: 전체 후보 테이블 리스트 (검색 결과)
         offset: 현재 오프셋 (어디까지 처리했는지)
         batch_size: 한 번에 추가할 테이블 수
-
+ 
     Returns:
         (new_selected_tables, new_table_context, new_offset)
     """
@@ -39,7 +41,6 @@ def expand_tables_tool(
     added_tables = [c["table_name"] for c in next_batch_items]
     
     # 4. 기존 선택 목록과 병합 (중복 제거)
-    # 순서를 유지하기 위해 dict.fromkeys 등을 쓸 수 있으나, 여기선 단순 병합
     new_selected = list(dict.fromkeys(current_selected + added_tables))
     
     logger.info(
@@ -47,8 +48,7 @@ def expand_tables_tool(
         len(added_tables), offset, next_offset, added_tables
     )
     
-    # 5. 컨텍스트 재구축 (utils 사용)
-    # rebuild_context_from_candidates를 사용하여 이름 매칭 및 컨텍스트 생성을 한 번에 처리
+    # 5. 컨텍스트 재구축
     _, new_context = rebuild_context_from_candidates(candidates, new_selected)
     
     return new_selected, new_context, next_offset

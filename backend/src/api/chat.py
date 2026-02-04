@@ -1,3 +1,5 @@
+"""채팅 세션/메시지 CRUD API."""
+
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict

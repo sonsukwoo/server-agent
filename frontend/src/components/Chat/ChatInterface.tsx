@@ -59,14 +59,11 @@ export const ChatInterface: React.FC = () => {
     useEffect(() => {
         const initSession = async () => {
             try {
+                // 기존 세션 목록만 불러오고, 특정 세션을 선택하지 않음 (새 채팅 상태)
                 const list = await apiClient.getSessions();
                 setSessions(sortSessionsDesc(list));
-                if (list.length > 0) {
-                    const lastSession = sortSessionsDesc(list)[0];
-                    await loadSession(lastSession.id);
-                } else {
-                    await startNewChat();
-                }
+                setCurrentSessionId(null);
+                setMessages([]);
             } catch (e) {
                 console.error("Failed to load session:", e);
             }
@@ -89,18 +86,34 @@ export const ChatInterface: React.FC = () => {
         currentSessionIdRef.current = currentSessionId;
     }, [currentSessionId]);
 
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // 스크롤 제어 로직
+    const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+        messagesEndRef.current?.scrollIntoView({ behavior });
     };
 
+    // 메시지가 추가되거나 세션이 바뀔 때 스크롤 처리
+    // 단, 에이전트 응답 생성 중(isLoading=true)일 때는 사용자가 위를 보고 있으면 방해하지 않음
     useEffect(() => {
+        // 1. 세션 변경 시에는 무조건 바닥으로
+        // 2. 메시지 길이가 늘어났을 때도 바닥으로 (사용자 질문 직후 등)
         scrollToBottom();
-    }, [messages, currentSessionId, sessionStates]);
+    }, [messages.length, currentSessionId]);
+
+    // 로딩 상태가 변할 때(메시지 생성 시작 등)는 스크롤을 강제하지 않음
+    // 필요하다면 이곳에 로직 추가
 
     const handleSubmit = async (e?: React.FormEvent) => {
         if (e) e.preventDefault();
-        const activeSessionId = currentSessionId;
-        if (!inputValue.trim() || !activeSessionId) return;
+        if (!inputValue.trim()) return;
+
+        let activeSessionId = currentSessionId;
+
+        // 세션이 없으면 첫 메시지 전송 시점에 생성
+        if (!activeSessionId) {
+            activeSessionId = await startNewChat();
+            if (!activeSessionId) return;
+        }
+
         if (sessionStates[activeSessionId]?.isLoading) return;
 
         const userQuestion = inputValue.trim();
@@ -130,7 +143,7 @@ export const ChatInterface: React.FC = () => {
             // Wait, looking at step 476 replacement:
             // "static async query..." is present.
             // So query is STATIC.
-            const result = await ApiClient.query(userQuestion, (newStatus) => {
+            const result = await ApiClient.query(userQuestion, activeSessionId, (newStatus) => {
                 updateSessionState(activeSessionId, { status: newStatus });
                 if (capturedLogs[capturedLogs.length - 1] !== newStatus) {
                     capturedLogs.push(newStatus);
@@ -183,8 +196,10 @@ export const ChatInterface: React.FC = () => {
             ensureSessionState(session.id);
             setMessages([]);
             setSessions(prev => sortSessionsDesc([session, ...prev]));
+            return session.id;
         } catch (e) {
             console.error("Failed to create new chat:", e);
+            return null;
         }
     };
 

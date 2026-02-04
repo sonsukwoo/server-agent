@@ -1,3 +1,5 @@
+"""SQL 안전성 검사 미들웨어."""
+
 import re
 
 class SqlOutputGuard:

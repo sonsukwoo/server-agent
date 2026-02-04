@@ -1,3 +1,5 @@
+"""고급 설정 서비스 계층."""
+
 import logging
 import httpx
 from config.settings import settings

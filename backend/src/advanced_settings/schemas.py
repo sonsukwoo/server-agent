@@ -1,3 +1,5 @@
+"""고급 설정 Pydantic 스키마."""
+
 from datetime import datetime
 from typing import Optional, Union
 from pydantic import BaseModel, Field

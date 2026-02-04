@@ -1,3 +1,5 @@
+"""고급 설정 API 라우터."""
+
 from fastapi import APIRouter, HTTPException
 from typing import List, Any
 from . import AlertService, AlertRuleCreate, AlertRuleResponse, AlertHistoryResponse

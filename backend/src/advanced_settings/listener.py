@@ -1,3 +1,5 @@
+"""고급 설정 이벤트 리스너."""
+
 import asyncio
 import logging
 import json

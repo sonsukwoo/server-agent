@@ -1,3 +1,5 @@
+"""DB 연결 풀 관리 및 채팅/모니터링 데이터 접근."""
+
 import logging
 import json
 from typing import Optional, List, Dict, Any
@@ -59,10 +61,24 @@ class DBManager:
                         CREATE TABLE IF NOT EXISTS chat.sessions (
                             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                             title TEXT NOT NULL DEFAULT 'New Chat',
+                            summary TEXT, -- 대화 요약
+                            summary_updated_at TIMESTAMPTZ, -- 요약 갱신 시각
+                            summary_last_message_id UUID, -- 요약 마지막 메시지 ID
+                            summary_last_created_at TIMESTAMPTZ, -- 요약 마지막 메시지 시각
                             created_at TIMESTAMPTZ DEFAULT now(),
                             updated_at TIMESTAMPTZ DEFAULT now()
                         );
                     """)
+
+                    # [Migration] develop 단계에서 기존 테이블이 있다면 컬럼 추가 (안전장치)
+                    # 실제 운영 환경에서는 별도 마이그레이션 스크립트 권장
+                    try:
+                        await conn.execute("ALTER TABLE chat.sessions ADD COLUMN IF NOT EXISTS summary TEXT;")
+                        await conn.execute("ALTER TABLE chat.sessions ADD COLUMN IF NOT EXISTS summary_updated_at TIMESTAMPTZ;")
+                        await conn.execute("ALTER TABLE chat.sessions ADD COLUMN IF NOT EXISTS summary_last_message_id UUID;")
+                        await conn.execute("ALTER TABLE chat.sessions ADD COLUMN IF NOT EXISTS summary_last_created_at TIMESTAMPTZ;")
+                    except Exception:
+                        pass # 이미 존재하거나 오류 시 무시 (ensure_schema의 멱등성 유지)
 
                     # 3. Messages Table
                     await conn.execute("""
@@ -254,5 +270,6 @@ class DBManager:
             # result format: 'DELETE 1'
             deleted_count = int(result.split(" ")[1])
             return deleted_count > 0
+
 
 db_manager = DBManager()

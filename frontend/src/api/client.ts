@@ -1,6 +1,7 @@
 export interface QueryRequest {
     agent: string;
     question: string;
+    session_id?: string;
 }
 
 export interface QueryResponse {
@@ -50,6 +51,7 @@ export class ApiClient {
 
     static async query(
         question: string,
+        sessionId?: string,
         onStatus?: (status: string) => void
     ): Promise<QueryResponse> {
         const response = await fetch(`${API_BASE_URL}/query`, {
@@ -60,6 +62,7 @@ export class ApiClient {
             body: JSON.stringify({
                 agent: 'sql',
                 question,
+                session_id: sessionId,
             }),
         });
 

@@ -4,12 +4,18 @@
 import json
 import logging
 from typing import Optional, Dict, Any
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import asyncio
 
 from src.agents.text_to_sql import app as sql_app
 from src.agents.text_to_sql.middleware.input_guard import InputGuard
+from config.settings import settings
+from src.agents.text_to_sql.chat_context import (
+    get_chat_context,
+    run_background_summarization,
+)
 
 logger = logging.getLogger("API_QUERY")
 
@@ -18,6 +24,7 @@ router = APIRouter(tags=["query"])
 class QueryRequest(BaseModel):
     agent: str  # "sql" 또는 "ubuntu"
     question: str
+    session_id: Optional[str] = None # 세션 컨텍스트 식별자
 
 class QueryResponse(BaseModel):
     ok: bool
@@ -26,10 +33,11 @@ class QueryResponse(BaseModel):
     error: str | None = None
 
 @router.post("/query")
-async def query(body: QueryRequest):
+async def query(body: QueryRequest, background_tasks: BackgroundTasks):
     """자연어 질문을 받아서 처리 (스트리밍 지원)"""
     agent_type = body.agent.lower().strip()
     question = body.question.strip()
+    session_id = body.session_id
 
     # 1. 입력 검증
     if not question:
@@ -38,6 +46,16 @@ async def query(body: QueryRequest):
     is_valid, error = InputGuard.validate(question)
     if not is_valid:
         raise HTTPException(status_code=400, detail=error)
+
+    # 사용자 질문에 컨텍스트 결합 (Agent에게는 하나의 긴 질문처럼 보임)
+    full_question = question
+    if session_id:
+        try:
+            context_prefix = await get_chat_context(session_id)
+            if context_prefix:
+                full_question = f"{context_prefix}\n{question}"
+        except Exception:
+            logger.exception("Failed to load chat context; proceeding without it.")
 
     # 노드 이름과 상태 메시지 매핑
     node_messages = {
@@ -57,7 +75,7 @@ async def query(body: QueryRequest):
     async def event_generator():
         if agent_type == "sql":
             initial_state = {
-                "user_question": question,
+                "user_question": full_question,
                 "sql_retry_count": 0,
                 "table_expand_count": 0,
                 "validation_retry_count": 0,
@@ -117,6 +135,11 @@ async def query(body: QueryRequest):
                                 }
                             }
                             yield f"data: {json.dumps({'type': 'result', 'payload': final_data}, ensure_ascii=False)}\n\n"
+                
+                # [Background] 응답 완료 후 요약 작업 예약
+                if session_id:
+                    background_tasks.add_task(run_background_summarization, session_id)
+
             except Exception as e:
                 logger.error("STREAM_ERROR: %s", e)
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
