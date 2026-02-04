@@ -143,41 +143,59 @@ graph TD
 
 ---
 
-## 📦 프로젝트 구조 (Directory Structure)
+## 📂 프로젝트 구조 (Directory Structure)
 
-### 📂 `backend/src/` (Core Logic)
-백엔드의 핵심 비즈니스 로직이 담긴 디렉토리입니다.
+본 프로젝트는 도메인 중심의 모듈화된 구조를 가지고 있으며, 각 디렉토리는 명확한 책임 범위를 가집니다.
 
-- **`advanced_settings/`**: 사용자가 직접 알림 조건(Lego Blocks)을 설정하는 모듈
-    - `schemas.py`: 알림 규칙 및 이력 데이터 검증을 위한 Pydantic 모델
-    - `templates.py`: PostgreSQL 트리거 및 함수 생성을 위한 SQL 템플릿
-    - `service.py`: 규칙 생성/삭제 및 MCP 서버와의 통신을 담당하는 비즈니스 로직
-    - `listener.py`: DB의 `NOTIFY` 신호를 감시하여 실시간 알림을 수신하는 전 전용 리스너
-    - `router.py`: 프론트엔드와 통신하는 API 엔드포인트
-    - `core.py`: (Deprecated) 이전 버전과의 호환성을 위한 래퍼 모듈
-- **`agents/`**: 지능형 에이전트 워크플로우
-    - `text_to_sql/`: 자연어를 SQL로 변환하는 LangGraph 노드 및 그래프 정의
-    - `middleware/`: 프롬프트 인젝션 및 SQL 안전성을 검사하는 `InputGuard`
-- **`api/`**: FastAPI 인프라 설정
-    - `main.py`: FastAPI 앱 객체 생성 및 라우터 등록 (진입점)
-    - `lifespan.py`: 서버 시작 시 DB 초기화 및 리스너 가동, 종료 시 자원 해제 관리
-    - `query.py`: 에이전트 실행 및 결과 스트리밍 엔드포인트
-- **`db/`**: 데이터베이스 관리
-    - `db_manager.py`: `asyncpg` 커넥션 풀 초기화 및 채팅 세션/메시지 CRUD 로직
-- **`schema/`**: 실시간 DB 스키마 동기화
-    - `orchestrator.py`: 초기 동기화 및 리스너 실행 제어
-    - `listener.py`: DB의 DDL 변경 이벤트(`CREATE/ALTER TABLE`) 감지
-    - `sync.py`: 변경된 스키마를 Qdrant 벡터 저장소에 반영(Embedding)
+<details>
+<summary><b>상세 디렉토리 구조 보기 (클릭하여 확장)</b></summary>
 
-### 📂 `mcp_servers/` (Tool Connectors)
-에이전트가 사용하는 도구(Tools)를 표준화된 방식으로 제공합니다.
+```text
+server-agent/
+├── backend/src/             # 🏰 Core Engine (FastAPI & 에이전트 로직)
+│   ├── advanced_settings/   # 알림 조건(Lego Blocks) 기반 모니터링 모듈
+│   │   ├── schemas.py       # Pydantic 기반 데이터 검증 모델 (Rule/History)
+│   │   ├── templates.py     # SQL 기반 트리거 및 함수 생성용 템플릿
+│   │   ├── service.py       # 알림 규칙 관리 및 MCP 서버 통신 제어
+│   │   ├── listener.py      # DB NOTIFY 채널 실시간 수신 전용 리스너
+│   │   ├── router.py        # 규칙 CRUD 및 알림 이력 조회 API
+│   │   └── core.py          # 하위 호환성 유지를 위한 래퍼(Deprecated)
+│   ├── agents/              # 지능형 에이전트 및 통신 클라이언트
+│   │   ├── text_to_sql/     # Text-to-SQL 메인 워크플로우 (LangGraph)
+│   │   │   ├── graph.py     # 에이전트 상태 전이 및 그래프 구조 정의
+│   │   │   ├── nodes.py     # 파싱, 검색, 생성, 검증 등 핵심 노드 구현체
+│   │   │   ├── prompts.py   # 단계별 시스템/사용자 지능형 프롬프트 소스
+│   │   │   ├── state.py     # 에이전트 실행 중 유지되는 상태 정보(State) 정의
+│   │   │   └── table_expand_tool.py # 캐시 기반 테이블 정보 확장 도구
+│   │   └── mcp_clients/     # 외부 MCP 서버 통합 클라이언트
+│   │       └── connector.py # HTTP 프로토콜 기반 MCP 서버 연동 공통 모듈
+│   ├── api/                 # FastAPI 웹 프레임워크 인프라
+│   │   ├── main.py          # 앱 진입점, 라우터 및 미들웨어 통합 등록
+│   │   ├── lifespan.py      # Startup/Shutdown 관리 (DB 초기화, 리스너 제어)
+│   │   ├── query.py         # 에이전트 질의 및 스트리밍 답변 API
+│   │   ├── chat.py          # 채팅 이력, 세션 관리 및 제목 자동 생성 API
+│   │   └── resource.py      # 실시간 서버 자원(CPU/MEM) 모니터링 API
+│   ├── db/                  # 데이터 저장소 액세스 레이어
+│   │   └── db_manager.py    # 커넥션 풀 초기화 및 채팅 기록 CRUD 총괄
+│   └── schema/              # 지능형 DB 스키마 관리 및 벡터화
+│       ├── orchestrator.py  # 초기 동기화 및 실시간 리스너 실행 제어
+│       ├── listener.py      # PostgreSQL DDL(스키마 변경) 이벤트 실시간 감지
+│       ├── sync.py          # 변경된 스키마를 벡터화하여 Qdrant 자동 반영
+│       ├── trigger_setup.py # 스키마 변경 감지를 위한 전용 트리거 자동 설치
+│       └── hash_utils.py    # 스키마 변경 여부(Diff)를 판별하는 해시 유틸리티
+├── mcp_servers/             # 🔌 Standardized Tools (MCP 서버군)
+│   ├── postgres/            # DB 지능형 제어 서버 (SQL 실행, 스키마 추출)
+│   │   ├── server.py        # MCP 도구 정의 및 실행 로직
+│   │   └── Dockerfile       # 독립 실행형 컨테이너 설정
+│   └── qdrant/              # 벡터 검색 서버 (테이블 시맨틱 검색)
+│       ├── server.py        # Qdrant 검색 및 임베딩 도구 제공
+│       └── Dockerfile       # 독립 실행형 컨테이너 설정
+└── frontend/                # 📊 Dashboard (React + Vite)
+    ├── src/                 # 대시보드 UI 및 상태 관리 로직
+    └── index.html           # SPA 진입점
+```
 
-- **`postgres/`**: SQL 쿼리 실행, 테이블 목록 조회, 스키마 명세 추출 툴 제공
-- **`qdrant/`**: 테이블 정보 검색(Vector Search) 및 임베딩 툴 제공
-
-### 📂 `frontend/` (Dashboard)
-- `React + Vite` 기반의 싱글 페이지 애플리케이션(SPA)
-- 실시간 리소스 모니터링 및 알림 이력 대시보드 제공
+</details>
 
 ---
 
