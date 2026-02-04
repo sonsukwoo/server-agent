@@ -178,6 +178,38 @@ body {
   margin: 0 auto;
 }
 
+.suggestion-chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 12px;
+  margin-bottom: 4px;
+  scrollbar-width: none;
+}
+
+.suggestion-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.chip {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.chip:hover {
+  background-color: var(--glass);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
 .input-wrapper {
   position: relative;
   display: flex;
@@ -574,6 +606,29 @@ body {
   animation: fadeIn 0.2s ease-out;
 }
 
+.settings-button {
+  position: relative;
+}
+
+.settings-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -588,7 +643,8 @@ body {
   background-color: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 16px;
-  width: 800px;
+  border-radius: 16px;
+  width: 1100px;
   max-width: 95vw;
   max-height: 85vh;
   overflow-y: auto;
@@ -731,6 +787,8 @@ body {
   font-size: 14px;
   outline: none;
   transition: border-color 0.2s;
+  height: 40px;
+  box-sizing: border-box;
 }
 
 .form-input:focus,
@@ -835,9 +893,15 @@ body {
 /* History Table Override for Dark Mode */
 .dark-table {
   width: 100%;
+  min-width: 900px;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 14px;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
 }
 
 .dark-table th {
@@ -855,10 +919,44 @@ body {
   color: var(--text-primary);
 }
 
+.dark-table th:last-child {
+  position: sticky;
+  right: 0;
+  background-color: var(--bg-tertiary);
+  box-shadow: -8px 0 12px rgba(0, 0, 0, 0.15);
+}
+
+.dark-table td:last-child {
+  position: sticky;
+  right: 0;
+  background-color: var(--bg-secondary);
+  box-shadow: -8px 0 12px rgba(0, 0, 0, 0.15);
+}
+
 .dark-table tr:last-child td {
   border-bottom: none;
 }
 
+
 .dark-table tr:hover td {
   background-color: var(--glass);
+}
+
+/* Sticky column hover fix */
+.dark-table tr:hover td:last-child {
+  background-color: #2a2a2a;
+  /* bg-secondary + glass approximation */
+}
+
+.dark-table td {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* Message column (5th column) should wrap */
+.dark-table td:nth-child(5) {
+  white-space: normal;
+  min-width: 200px;
+  max-width: 400px;
+  line-height: 1.4;
 }

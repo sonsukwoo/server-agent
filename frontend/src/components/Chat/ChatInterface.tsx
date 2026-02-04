@@ -316,6 +316,19 @@ export const ChatInterface: React.FC = () => {
                 </div>
 
                 <div className="input-container">
+                    {messages.length === 0 && (
+                        <div className="suggestion-chips">
+                            <button className="chip" onClick={() => setInputValue('가장 자원 소모가 높은 컨테이너')}>
+                                가장 자원 소모가 높은 컨테이너
+                            </button>
+                            <button className="chip" onClick={() => setInputValue('어제 오후 1시부터 3시까지 cpu 와 램 사용 현황')}>
+                                어제 오후 1시~3시 CPU/RAM 사용 현황
+                            </button>
+                            <button className="chip" onClick={() => setInputValue('이전 결과 시점에 사용중이던 컨테이너')}>
+                                이전 결과 시점에 사용중이던 컨테이너
+                            </button>
+                        </div>
+                    )}
                     <form className="input-wrapper" onSubmit={handleSubmit}>
                         <textarea
                             ref={textareaRef}

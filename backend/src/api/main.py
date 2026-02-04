@@ -8,6 +8,7 @@ from src.api.lifespan import lifespan
 from src.api.query import router as query_router
 from src.api.resource import router as resource_router
 from src.api.chat import router as chat_router
+from src.api.schema import router as schema_router
 
 app = FastAPI(title="Server Agent API", lifespan=lifespan)
 
@@ -24,6 +25,7 @@ app.add_middleware(
 app.include_router(chat_router)
 app.include_router(query_router)
 app.include_router(resource_router)
+app.include_router(schema_router)
 
 # 고급 설정 (알림) 라우터
 from src.advanced_settings.router import router as advanced_router

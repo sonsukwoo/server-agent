@@ -42,6 +42,11 @@ export interface ResourceSummary {
     inactive: number;
 }
 
+export interface SchemaTable {
+    table: string;
+    columns: string[];
+}
+
 export class ApiClient {
     private baseUrl: string;
 
@@ -115,6 +120,14 @@ export class ApiClient {
         const response = await fetch(`${this.baseUrl}/resource-summary`);
         if (!response.ok) {
             throw new Error('Failed to fetch resource summary');
+        }
+        return response.json();
+    }
+
+    async getSchemaTables(): Promise<SchemaTable[]> {
+        const response = await fetch(`${this.baseUrl}/schema/tables`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch schema tables');
         }
         return response.json();
     }
