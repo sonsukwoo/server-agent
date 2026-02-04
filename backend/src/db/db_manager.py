@@ -1,8 +1,6 @@
 import logging
 import json
-import uuid
 from typing import Optional, List, Dict, Any
-from datetime import datetime
 import asyncpg
 from config.settings import settings
 
@@ -28,10 +26,27 @@ class DBManager:
             )
         return self._pool
 
+    def _log_pool_usage(self, pool, tag: str = "usage") -> None:
+        """Best-effort pool usage logging (used/total)."""
+        try:
+            holders = getattr(pool, "_holders", None)
+            if holders is not None:
+                used = sum(1 for h in holders if getattr(h, "_in_use", False))
+                total = len(holders)
+                logger.info("DB pool %s: used=%s total=%s", tag, used, total)
+                return
+            size = pool.get_size() if hasattr(pool, "get_size") else None
+            free = pool._queue.qsize() if hasattr(pool, "_queue") else None
+            if size is not None and free is not None:
+                logger.info("DB pool %s: used=%s total=%s", tag, size - free, size)
+        except Exception:
+            pass
+
     async def ensure_schema(self):
         """서버 시작 시 스키마 및 테이블 생성"""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            self._log_pool_usage(pool, "acquire")
             try:
                 async with conn.transaction():
                     # pgcrypto for gen_random_uuid()
@@ -110,6 +125,7 @@ class DBManager:
         """세션 목록 조회 (최신순)"""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            self._log_pool_usage(pool, "acquire")
             rows = await conn.fetch("""
                 SELECT id, title, created_at, updated_at 
                 FROM chat.sessions 
@@ -130,6 +146,7 @@ class DBManager:
         """새 세션 생성"""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            self._log_pool_usage(pool, "acquire")
             row = await conn.fetchrow("""
                 INSERT INTO chat.sessions (title) 
                 VALUES ($1) 
@@ -146,6 +163,7 @@ class DBManager:
         """세션 상세 조회 (메시지 포함)"""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            self._log_pool_usage(pool, "acquire")
             # 세션 존재 확인
             session_row = await conn.fetchrow("SELECT * FROM chat.sessions WHERE id = $1", session_id)
             if not session_row:
@@ -185,6 +203,7 @@ class DBManager:
         """메시지 저장 및 세션 업데이트 시간 갱신"""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            self._log_pool_usage(pool, "acquire")
             async with conn.transaction():
                 # 메시지 저장
                 payload_json = json.dumps(payload) if payload else None
@@ -230,6 +249,7 @@ class DBManager:
         """세션 삭제 (Cascade로 메시지도 자동 삭제됨)"""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            self._log_pool_usage(pool, "acquire")
             result = await conn.execute("DELETE FROM chat.sessions WHERE id = $1", session_id)
             # result format: 'DELETE 1'
             deleted_count = int(result.split(" ")[1])

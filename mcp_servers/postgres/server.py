@@ -42,6 +42,13 @@ def _with_conn() -> Generator[Any, None, None]:
     pool = _get_pool()
     conn = pool.getconn()
     try:
+        used = len(getattr(pool, "_used", []))
+        free = len(getattr(pool, "_pool", []))
+        total = used + free
+        logger.info("DB pool acquire: used=%s total=%s", used, total)
+    except Exception:
+        pass
+    try:
         yield conn
     finally:
         pool.putconn(conn)

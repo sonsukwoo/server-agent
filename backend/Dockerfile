@@ -15,10 +15,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY mcp_servers/postgres/requirements.txt mcp-postgres-reqs.txt
 RUN pip install --no-cache-dir -r mcp-postgres-reqs.txt
 
-# Ubuntu MCP
-COPY mcp_servers/ubuntu/requirements.txt mcp-ubuntu-reqs.txt
-RUN pip install --no-cache-dir -r mcp-ubuntu-reqs.txt
-
 # Qdrant MCP
 COPY mcp_servers/qdrant/requirements.txt mcp-qdrant-reqs.txt
 RUN pip install --no-cache-dir -r mcp-qdrant-reqs.txt
