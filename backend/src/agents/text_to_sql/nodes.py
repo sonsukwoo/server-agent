@@ -144,19 +144,23 @@ def _extract_tables_from_sql(sql: str) -> list[str]:
     return list(set(tables))
 
 
+# Helper (시간 범위 추출)
+def _extract_time_range_from_sql(sql: str) -> tuple[str, str]:
+    """SQL에서 ts BETWEEN A AND B 구문을 찾아 A, B를 반환"""
+    # 예: ts BETWEEN '2023-01-01T00:00:00' AND '2023-01-02T00:00:00'
+    # 작은따옴표 처리
+    pattern = r"ts\s+BETWEEN\s+'([^']+)'\s+AND\s+'([^']+)'"
+    match = re.search(pattern, sql, re.IGNORECASE)
+    if match:
+        return match.group(1), match.group(2)
+    return "", ""
+
+
 # Helper (Node 5: generate_sql)
 def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
     failed = state.get("failed_queries", []) or []
     time_range = state.get("parsed_request", {}).get("time_range", {})
-    
-    # all_time 플래그가 있으면 시간 필터 생략 (빈 문자열)
-    if time_range.get("all_time"):
-        time_start = ""
-        time_end = ""
-    else:
-        time_start = time_range.get("start", "")
-        time_end = time_range.get("end", "")
-    
+
     # 이전 SQL 쿼리 추출 (컨텍스트에서)
     user_question = state.get("user_question", "")
     previous_sql = ""
@@ -165,11 +169,43 @@ def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
         sql_match = re.search(r'```sql\n(.*?)\n```', user_question, re.DOTALL)
         if sql_match:
             previous_sql = sql_match.group(1).strip()
+
+    # Time Mode 결정
+    if time_range.get("all_time"):
+        time_mode = "all_time"
+        time_start = "전체"
+        time_end = "현재"
+        inherit_start = ""
+        inherit_end = ""
+    elif time_range.get("inherit"):
+        time_mode = "inherit"
+        # 이전 SQL에서 시간 추출 시도
+        p_start, p_end = _extract_time_range_from_sql(previous_sql)
+        if p_start and p_end:
+             time_start = f"{p_start} (상속됨)"
+             time_end = f"{p_end} (상속됨)"
+             inherit_start = p_start
+             inherit_end = p_end
+        else:
+             # 상속할 시간이 없으면 빈 값으로 두어 재질문 유도
+             time_start = ""
+             time_end = ""
+             inherit_start = ""
+             inherit_end = ""
+    else:
+        time_mode = "explicit"
+        time_start = time_range.get("start", "N/A")
+        time_end = time_range.get("end", "N/A")
+        inherit_start = ""
+        inherit_end = ""
     
     return {
         "intent": state.get("parsed_request", {}).get("intent", ""),
+        "time_mode": time_mode,
         "time_start": time_start,
         "time_end": time_end,
+        "inherit_start": inherit_start,
+        "inherit_end": inherit_end,
         "metric": state.get("parsed_request", {}).get("metric", ""),
         "condition": state.get("parsed_request", {}).get("condition", ""),
         "user_constraints": state.get("user_constraints", "") or "",
@@ -190,6 +226,7 @@ def _build_generate_sql_messages(inputs: dict) -> list:
         HumanMessage(
             content=GENERATE_SQL_USER.format(
                 intent=inputs["intent"],
+                time_mode=inputs["time_mode"],
                 time_start=inputs["time_start"],
                 time_end=inputs["time_end"],
                 metric=inputs["metric"],
@@ -217,14 +254,32 @@ def _append_failed_query(failed_queries: list[str], sql: str) -> list[str]:
 def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
     time_range = state.get("parsed_request", {}).get("time_range", {})
     
-    # all_time 플래그가 있으면 시간 범위를 "전체"로 표시하고 힌트 추가
+    # Time Mode 결정
     if time_range.get("all_time"):
-        time_start = "전체 (SQL에 시간 조건이 없어도 정상)"
+        time_mode = "all_time"
+        time_start = "전체"
         time_end = "현재"
     elif time_range.get("inherit"):
-        time_start = "이전 쿼리 시간 상속 (사용자가 시간 미지정)"
-        time_end = "이전 쿼리 시간 상속"
+        time_mode = "inherit"
+        # 이전 SQL 쿼리 추출 (컨텍스트에서)
+        user_question = state.get("user_question", "")
+        previous_sql = ""
+        if "[Previous Query Context]" in user_question and "```sql" in user_question:
+            import re
+            sql_match = re.search(r'```sql\n(.*?)\n```', user_question, re.DOTALL)
+            if sql_match:
+                previous_sql = sql_match.group(1).strip()
+        
+        # 이전 SQL에서 시간 추출 시도
+        p_start, p_end = _extract_time_range_from_sql(previous_sql)
+        if p_start and p_end:
+             time_start = f"{p_start} (상속됨)"
+             time_end = f"{p_end} (상속됨)"
+        else:
+             time_start = "이전 쿼리 시간 상속"
+             time_end = "이전 쿼리 시간 상속"
     else:
+        time_mode = "explicit"
         time_start = time_range.get("start", "N/A")
         time_end = time_range.get("end", "N/A")
     
@@ -234,6 +289,7 @@ def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
             content=VALIDATE_RESULT_USER.format(
                 current_time=get_current_time(),
                 user_question=state.get("user_question", ""),
+                time_mode=time_mode,
                 time_start=time_start,
                 time_end=time_end,
                 user_constraints=state.get("user_constraints", "") or "",
@@ -550,7 +606,12 @@ async def generate_sql(state: TextToSQLState) -> dict:
     
     # 1. 입력 데이터 준비
     inputs = _build_sql_prompt_inputs(state)
-    
+
+    # 1-1. 상속 실패 시에도 이전 SQL을 유지하도록 유도
+    # 시간 조건이 없더라도 기존 WHERE/필터는 유지되어야 함
+    # (상속 실패로 전체 범위를 강제 전환하지 않음)
+    time_fallback = False
+
     logger.info(
         "TEXT_TO_SQL:generate_sql start retry=%s total_loops=%s table_count=%s failed_count=%s",
         state.get("sql_retry_count", 0),
@@ -854,6 +915,73 @@ async def validate_llm(state: TextToSQLState) -> dict:
     status = state.get("result_status")
     current_sql = state.get("generated_sql", "")
     failed_queries = list(state.get("failed_queries", []) or [])
+
+    # 0. 사전 검증: All Time 모드인데 시간 필터가 있으면 즉시 반려
+    time_range = state.get("parsed_request", {}).get("time_range", {})
+    if time_range.get("all_time"):
+        ts_start, ts_end = _extract_time_range_from_sql(current_sql)
+        if ts_start or ts_end:
+            failed_queries = _append_failed_query(failed_queries, current_sql)
+            feedback = "Time Mode가 'all_time'인데 SQL에 시간 조건(ts BETWEEN ...)이 포함되어 있습니다. 시간 조건을 제거하세요."
+            logger.info("TEXT_TO_SQL:validate_llm PRE-CHECK FAILED: %s", feedback)
+            return {
+                "verdict": "SQL_BAD",
+                "feedback_to_sql": feedback,
+                "validation_reason": "전체 조회 모드 위반 (시간 조건 포함됨)",
+                "failed_queries": failed_queries,
+                "validation_retry_count": state.get("validation_retry_count", 0) + 1,
+                "total_loops": state.get("total_loops", 0) + 1,
+                "last_tool_usage": f"⚠️ 사전 검증 반려: 전체 조회인데 시간 조건 있음"
+            }
+
+    # 0-1. 사전 검증: Inherit 모드인데 시간 필터가 누락되면 즉시 반려
+    if time_range.get("inherit"):
+        # 이전 쿼리 시간 추출
+        user_question = state.get("user_question", "")
+        previous_sql = ""
+        if "[Previous Query Context]" in user_question and "```sql" in user_question:
+            import re
+            sql_match = re.search(r'```sql\n(.*?)\n```', user_question, re.DOTALL)
+            if sql_match:
+                previous_sql = sql_match.group(1).strip()
+        
+        p_start, p_end = _extract_time_range_from_sql(previous_sql)
+        
+        # 이전 쿼리에 시간이 있었는데, 현재 쿼리에 없으면 반려
+        if p_start and p_end:
+            c_start, c_end = _extract_time_range_from_sql(current_sql)
+            if not c_start and not c_end:
+                failed_queries = _append_failed_query(failed_queries, current_sql)
+                feedback = (
+                    f"Time Mode가 'inherit'입니다. 이전 쿼리의 시간 조건(ts BETWEEN '{p_start}' AND '{p_end}')을 "
+                    "그대로 유지해야 합니다. 현재 SQL에 시간 조건이 없습니다."
+                )
+                logger.info("TEXT_TO_SQL:validate_llm PRE-CHECK FAILED (INHERIT): %s", feedback)
+                return {
+                    "verdict": "SQL_BAD",
+                    "feedback_to_sql": feedback,
+                    "validation_reason": "시간 상속 실패 (시간 조건 누락)",
+                    "failed_queries": failed_queries,
+                    "validation_retry_count": state.get("validation_retry_count", 0) + 1,
+                    "total_loops": state.get("total_loops", 0) + 1,
+                    "last_tool_usage": f"⚠️ 사전 검증 반려: 시간 상속 누락"
+                }
+            if c_start != p_start or c_end != p_end:
+                failed_queries = _append_failed_query(failed_queries, current_sql)
+                feedback = (
+                    f"Time Mode가 'inherit'입니다. 이전 쿼리의 시간 조건(ts BETWEEN '{p_start}' AND '{p_end}')을 "
+                    f"그대로 유지해야 합니다. 현재 SQL의 시간 조건은 '{c_start}' ~ '{c_end}'입니다."
+                )
+                logger.info("TEXT_TO_SQL:validate_llm PRE-CHECK FAILED (INHERIT MISMATCH): %s", feedback)
+                return {
+                    "verdict": "SQL_BAD",
+                    "feedback_to_sql": feedback,
+                    "validation_reason": "시간 상속 실패 (시간 조건 불일치)",
+                    "failed_queries": failed_queries,
+                    "validation_retry_count": state.get("validation_retry_count", 0) + 1,
+                    "total_loops": state.get("total_loops", 0) + 1,
+                    "last_tool_usage": f"⚠️ 사전 검증 반려: 시간 상속 불일치"
+                }
 
     if status == "error":
         verdict = state.get("verdict", "SQL_BAD")

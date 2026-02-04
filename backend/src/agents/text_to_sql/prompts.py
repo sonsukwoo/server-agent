@@ -93,8 +93,11 @@ GENERATE_SQL_SYSTEM = """
 
 GENERATE_SQL_USER = """
 사용자 의도: {intent}
+시간 모드: {time_mode}
 시간 범위: {time_start} ~ {time_end}
-(시간 범위가 비어있으면 시간 조건 없이 전체 데이터를 조회한다.)
+(시간 모드가 'all_time'이면 시간 조건 없이 전체 데이터를 조회한다.)
+(시간 모드가 'inherit'이면 이전 SQL의 시간 조건을 반드시 유지한다.)
+(시간 모드가 'explicit'이면 지정된 시간 범위를 정확히 반영한다.)
 메트릭: {metric}
 조건: {condition}
 추가 제약(수정 지시): {user_constraints}
@@ -129,9 +132,10 @@ VALIDATE_RESULT_SYSTEM = """
 7) [중요] **TABLE_MISSING 판단 기준**:
    - 현재 제공된 `table_context`만으로는 사용자 질문에 대답할 수 없는 경우 (예: "특정 테이블"을 넣어야 하는데 스키마에 없음).
    - 이 경우 즉시 verdict="TABLE_MISSING"을 반환하라. 그러면 에이전트가 테이블을 추가로 검색해올 것이다.
-8) **전체 조회(All Time) 허용**:
-   - 시간 범위가 '전체' 또는 '전체 ~ 현재'로 표시된 경우, SQL에 시간 조건이 없는 것이 **정상**이다.
-   - 이 경우 '시간 조건 누락'으로 반려하지 마라.
+8) **시간 모드(time_mode) 검증**:
+   - `time_mode='all_time'`: SQL에 시간 조건(WHERE ts ...)이 **없어야** 정상이다. 있으면 불필요한 조건으로 간주하라.
+   - `time_mode='inherit'`: 이전 쿼리(사용자가 제공하지 않았어도)의 시간 조건을 **그대로 유지**했는지 확인하라. 누락되면 SQL_BAD.
+   - `time_mode='explicit'`: 제시된 시간 범위가 정확히 반영되었는지 확인하라.
 9) 사용자의 질문이 이전 결과/기록을 참조하는 경우 (후속 질문):
    - 사용자가 **새로운 시간 범위를 명시하지 않았다면**, 이전 SQL의 시간 조건을 유지하는 것이 맞다.
    - 사용자가 시간 변경을 요청하지 않았는데 이전 SQL의 시간 조건이 유지되었다면 "OK"로 판단하라.
@@ -152,6 +156,7 @@ VALIDATE_RESULT_SYSTEM = """
 VALIDATE_RESULT_USER = """
 현재 시각: {current_time}
 사용자 질문(원문): {user_question}
+시간 모드: {time_mode}
 시간 범위: {time_start} ~ {time_end}
 추가 제약(수정 지시): {user_constraints}
 

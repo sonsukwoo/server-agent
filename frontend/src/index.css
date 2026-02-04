@@ -47,6 +47,64 @@ body {
   display: flex;
   flex-direction: column;
   padding: 12px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  z-index: 20;
+}
+
+.sidebar.closed {
+  width: 0;
+  padding: 0;
+  border-right: none;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background-color: var(--bg-tertiary);
+  /* 눈에 띄게 */
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.sidebar-toggle:hover {
+  background-color: var(--glass);
+  color: var(--text-primary);
+}
+
+.sidebar-toggle.open {
+  /* 사이드바가 열려있을 때 토글 버튼 위치 조정 (사이드바 내부 헤더처럼 보이게 하거나 숨기거나) */
+  left: 270px;
+  /* 사이드바 너비 + 여백 */
+  background-color: transparent;
+  border: none;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    height: 100%;
+    top: 0;
+    left: 0;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.5);
+  }
+
+  .sidebar-toggle.open {
+    left: 270px;
+  }
 }
 
 .sidebar-new-chat {

@@ -32,6 +32,8 @@ def has_table_context(state: TextToSQLState) -> str:
 def guard_sql_route(state: TextToSQLState) -> str:
     if not state.get("sql_guard_error"):
         return "ok"
+    if state.get("sql_guard_error") == "CLARIFICATION_NEEDED":
+        return "fail"
     if state.get("sql_retry_count", 0) <= MAX_SQL_RETRY and state.get("total_loops", 0) < MAX_TOTAL_LOOPS:
         return "retry"
     return "fail"

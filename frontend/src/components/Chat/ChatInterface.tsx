@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Plus, MessageSquare, Bot, Trash2, Square } from 'lucide-react';
+import { Send, Plus, MessageSquare, Bot, Trash2, Square, PanelLeft } from 'lucide-react';
 import { MessageBubble } from './MessageBubble';
 import { ApiClient } from '../../api/client';
 import { ResourceDashboard } from '../Dashboard/ResourceDashboard';
@@ -7,6 +7,7 @@ import { ResourceDashboard } from '../Dashboard/ResourceDashboard';
 export const ChatInterface: React.FC = () => {
     const [messages, setMessages] = useState<any[]>([]);
     const [inputValue, setInputValue] = useState('');
+    const [isSidebarOpen, setSidebarOpen] = useState(true);
     const [sessionStates, setSessionStates] = useState<Record<string, { isLoading: boolean; status: string; logs: string[] }>>({});
     const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
     const [sessions, setSessions] = useState<any[]>([]);
@@ -250,8 +251,24 @@ export const ChatInterface: React.FC = () => {
 
     return (
         <div className="app-container">
-            <aside className="sidebar">
-                <div className="sidebar-new-chat" onClick={startNewChat}>
+            {/* Toggle Button (Mobile/Desktop) */}
+            <button
+                className={`sidebar-toggle ${isSidebarOpen ? 'open' : ''}`}
+                onClick={() => setSidebarOpen(!isSidebarOpen)}
+                aria-label="Toggle sidebar"
+            >
+                <PanelLeft size={20} />
+            </button>
+
+            {/* Sidebar */}
+            <aside className={`sidebar ${isSidebarOpen ? 'open' : 'closed'}`}>
+                <div className="sidebar-header">
+                    {/* Mobile에서 닫기 버튼 추가 가능, 현재는 외부 토글로 제어 */}
+                </div>
+                <div className="sidebar-new-chat" onClick={() => {
+                    startNewChat();
+                    if (window.innerWidth <= 768) setSidebarOpen(false); // 모바일에서는 클릭 후 닫기
+                }}>
                     <Plus size={16} />
                     New chat
                 </div>
@@ -260,7 +277,10 @@ export const ChatInterface: React.FC = () => {
                         <div
                             key={s.id}
                             className={`sidebar-session ${s.id === currentSessionId ? 'active' : ''}`}
-                            onClick={() => loadSession(s.id)}
+                            onClick={() => {
+                                loadSession(s.id);
+                                if (window.innerWidth <= 768) setSidebarOpen(false); // 모바일에서는 클릭 후 닫기
+                            }}
                         >
                             <MessageSquare size={14} />
                             <span className="sidebar-session-title">{s.title}</span>
@@ -308,19 +328,17 @@ export const ChatInterface: React.FC = () => {
                 </div>
 
                 <div className="input-container">
-                    {messages.length === 0 && (
-                        <div className="suggestion-chips">
-                            <button className="chip" onClick={() => setInputValue('가장 자원 소모가 높은 컨테이너')}>
-                                가장 자원 소모가 높은 컨테이너
-                            </button>
-                            <button className="chip" onClick={() => setInputValue('어제 오후 1시부터 3시까지 cpu 와 램 사용 현황')}>
-                                어제 오후 1시~3시 CPU/RAM 사용 현황
-                            </button>
-                            <button className="chip" onClick={() => setInputValue('이전 결과 시점에 사용중이던 컨테이너')}>
-                                이전 결과 시점에 사용중이던 컨테이너
-                            </button>
-                        </div>
-                    )}
+                    <div className="suggestion-chips">
+                        <button className="chip" onClick={() => setInputValue('어제 오후 1시부터 3시까지 cpu 와 램 사용 현황')}>
+                            어제 오후 1시~3시 CPU/RAM 사용 현황
+                        </button>
+                        <button className="chip" onClick={() => setInputValue('해당 결과에서 상위 5개 추출')}>
+                            해당 결과에서 상위 5개 추출
+                        </button>
+                        <button className="chip" onClick={() => setInputValue('램 사용률이 40프로 넘었을때만 보여줘')}>
+                            램 사용률이 40% 넘었을때만 보여줘
+                        </button>
+                    </div>
                     <form className="input-wrapper" onSubmit={handleSubmit}>
                         <textarea
                             ref={textareaRef}
