@@ -116,19 +116,7 @@ graph TD
     %% End
     generate_report --> End((종료))
 
-    %% Tool Call Highlight
-    subgraph "Tools & Metadata"
-        direction TB
-        T1["🔍 search_tables (Qdrant)"]
-        T2["🔗 expand_tables (Internal)"]
-        T3["🚀 execute_sql (Postgres)"]
-        M1["� Metadata (Column/Type/Comment)"]
-    end
-    
-    retrieve_tables -.-> T1
-    generate_sql -.-> T2
-    execute_sql -.-> T3
-    generate_sql -.-> M1
+    %% (Tools & Metadata section removed to show only node flow)
 ```
 
 ### 📋 노드별 상세 설명 및 도구 호출
