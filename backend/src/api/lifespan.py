@@ -5,16 +5,16 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from config.settings import settings
-from src.schema.listener import SchemaListener
 from src.db.db_manager import db_manager
-from src.schema.sync import sync_schema_embeddings_mcp
+# 오케스트레이터 함수들을 상위 레벨에서 import하여 스코프 문제 해결
+from src.schema.orchestrator import run_once, start_listener, stop_listener
 
 logger = logging.getLogger("LIFESPAN")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """앱 시작/종료 수명주기 핸들러"""
-    schema_listener = None
+    alert_listener = None
     
     # 1. 채팅 기록 스키마 초기화 (항상 수행)
     try:
@@ -29,12 +29,10 @@ async def lifespan(app: FastAPI):
         )
         try:
             # 초기 동기화 (1회)
-            await sync_schema_embeddings_mcp()
+            await run_once()
 
-            # 리스너 시작 (Background Task)
-            schema_listener = SchemaListener(callback=sync_schema_embeddings_mcp)
-            await schema_listener.start()
-            logger.info("LIFESPAN: Schema listener started")
+            # 리스너 시작
+            await start_listener()
 
         except Exception as e:
             logger.error("LIFESPAN: Schema sync/listener setup failed: %s", e)
@@ -51,10 +49,14 @@ async def lifespan(app: FastAPI):
     yield
     
     # 4. 종료 처리
-    if schema_listener:
-        await schema_listener.stop()
-        logger.info("LIFESPAN: Schema listener stopped")
+    # 스키마 리스너 종료 (오케스트레이터 위임)
+    if settings.enable_schema_sync:
+        try:
+            await stop_listener()
+        except Exception as e:
+             logger.error("LIFESPAN: Schema listener stop failed: %s", e)
     
+    # 알림 리스너 종료
     if alert_listener:
         await alert_listener.stop()
         logger.info("LIFESPAN: Alert listener stopped")

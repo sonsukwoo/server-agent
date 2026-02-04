@@ -3,7 +3,7 @@ import logging
 from typing import Tuple, Dict, Any
 
 from config.settings import settings
-from src.agents.text_to_sql.utils import get_now
+from src.agents.text_to_sql.common.utils import get_now
 
 logger = logging.getLogger("PARSED_REQUEST_GUARD")
 

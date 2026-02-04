@@ -20,10 +20,10 @@ from .prompts import (
     VALIDATE_RESULT_SYSTEM, VALIDATE_RESULT_USER,
     GENERATE_REPORT_SYSTEM, GENERATE_REPORT_USER,
 )
-from .constants import (
+from .common.constants import (
     RETRIEVE_K, TOP_K
 )
-from .utils import (
+from .common.utils import (
     get_current_time, parse_json_from_llm, normalize_sql,
     build_table_context, rebuild_context_from_candidates,
     classify_sql_error, next_batch, apply_elbow_cut

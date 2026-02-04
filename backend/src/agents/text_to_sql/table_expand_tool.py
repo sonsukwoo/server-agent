@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Tuple
 import logging
 
-from .utils import build_table_context
+from .common.utils import build_table_context, rebuild_context_from_candidates
 
 logger = logging.getLogger("TEXT_TO_SQL_TOOLS")
 
@@ -49,7 +49,6 @@ def expand_tables_tool(
     
     # 5. 컨텍스트 재구축 (utils 사용)
     # rebuild_context_from_candidates를 사용하여 이름 매칭 및 컨텍스트 생성을 한 번에 처리
-    from .utils import rebuild_context_from_candidates
     _, new_context = rebuild_context_from_candidates(candidates, new_selected)
     
     return new_selected, new_context, next_offset

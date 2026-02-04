@@ -102,39 +102,19 @@ async def sync_schema_embeddings_mcp() -> None:
             collection_created = True
 
         # schema hash 비교 (변경 없고 컬렉션도 이미 있으면 스킵)
-        schema_hash = _schema_hash(docs)
-        stored_hash = _read_hash_file()
+        from .hash_utils import calculate_schema_hash, read_hash_file, write_hash_file
+        
+        schema_hash = calculate_schema_hash(docs)
+        stored_hash = read_hash_file()
+        
         if stored_hash == schema_hash and not collection_created:
             logger.info("스키마 변경 없음: 임베딩 스킵")
             return
 
         await qclient.call_tool("upsert_schema", {"docs": docs})
 
-    _write_hash_file(schema_hash)
+    write_hash_file(schema_hash)
     logger.info("스키마 임베딩 완료: 테이블 %s개", len(docs))
-
-
-def _schema_hash(docs: list[dict]) -> str:
-    payload = []
-    for doc in docs:
-        payload.append(
-            {
-                "doc_type": doc.get("doc_type"),
-                "schema": doc.get("schema"),
-                "table_name": doc.get("table_name"),
-                "description": doc.get("description"),
-                "columns": [
-                    {
-                        "name": c.get("name"),
-                        "type": c.get("type"),
-                        "description": c.get("description"),
-                    }
-                    for c in doc.get("columns", [])
-                ],
-            }
-        )
-    canonical = json.dumps(payload, ensure_ascii=True, sort_keys=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _infer_primary_time(columns: list[dict]) -> str | None:
@@ -163,21 +143,3 @@ def _infer_join_keys(columns: list[dict]) -> list[str]:
             deduped.append(k)
     return deduped
 
-
-def _read_hash_file() -> str | None:
-    path = Path(settings.schema_hash_file)
-    try:
-        if path.exists():
-            return path.read_text(encoding="utf-8").strip() or None
-    except Exception as e:
-        logger.warning("SCHEMA_EMBED: hash read failed: %s", e)
-    return None
-
-
-def _write_hash_file(schema_hash: str) -> None:
-    path = Path(settings.schema_hash_file)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(schema_hash, encoding="utf-8")
-    except Exception as e:
-        logger.warning("SCHEMA_EMBED: hash write failed: %s", e)
