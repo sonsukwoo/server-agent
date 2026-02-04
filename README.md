@@ -69,33 +69,76 @@
 
 ---
 
-## 🚀 에이전트 워크플로우 (Architecture Flow)
+## 🚀 에이전트 워크플로우 (Architecture Flow: LangGraph)
 
-사용자가 질문을 입력하면 다음과 같은 과정을 거쳐 답변이 생성됩니다.
+에이전트는 **LangGraph**를 기반으로 설계되었으며, 각 단계(Node)는 명확한 책임과 도구(Tool)를 가집니다. 특히 실패 시 스스로 쿼리를 수정하거나 테이블 정보를 추가로 확장하는 **순환 구조(Cyclic)**를 가집니다.
 
 ```mermaid
 graph TD
-    User["👤 사용자 질문"] --> JSON["🧠 JSON 구조화 & 정규화"]
-    JSON --> Middleware["🛡️ InputGuard (보안 검증)"]
+    %% Entry
+    Start((시작)) --> parse_request["1️⃣ parse_request (구조화)"]
     
-    Middleware -- "차단" --> Block["🚫 거부 메시지"]
-    Middleware -- "통과" --> Agent["🤖 SQL 에이전트"]
+    %% Input Layer
+    parse_request --> validate_request{"2️⃣ validate_request (검증)"}
     
-    Agent --> VectorSearch["🔍 Qdrant 검색 & Top-5 리랭크"]
-    VectorSearch --> TableExpansion["🔗 테이블 확장 (FK & 캐시 탐색)"]
+    %% Retrieval Layer
+    validate_request -- "통과" --> retrieve_tables["3️⃣ retrieve_tables (벡터 검색)"]
+    validate_request -- "차단" --> generate_report
     
-    TableExpansion --> GenerateSQL["📝 SQL 생성 (상세 메타데이터 참조)"]
-    GenerateSQL --> GuardSQL["🛡️ 쿼리 안전성 검사"]
+    retrieve_tables --> select_tables{"4️⃣ select_tables (리랭킹)"}
     
-    GuardSQL -- "위험" --> FixSQL["🔧 쿼리 수정"]
-    GuardSQL -- "안전" --> ExecuteSQL["🚀 DB 실행"]
+    %% Generation & Guard Layer
+    select_tables -- "성공" --> generate_sql["5️⃣ generate_sql (SQL 생성)"]
+    select_tables -- "실패" --> generate_report
     
-    ExecuteSQL -- "성공" --> Report["📊 결과 보고서 작성"]
-    ExecuteSQL -- "실패" --> Reflection["🤔 에러 분석 & 자가 치유"]
-    Reflection --> GenerateSQL
+    generate_sql --> guard_sql{"6️⃣ guard_sql (보안 검사)"}
+    guard_sql -- "Retry" --> generate_sql
+    guard_sql -- "OK" --> execute_sql["7️⃣ execute_sql (DB 실행)"]
     
-    Report --> UserResponse["💬 최종 답변"]
+    %% Execution & Validation Layer
+    execute_sql --> normalize_result["8️⃣ normalize_result (정규화)"]
+    normalize_result --> validate_llm{"9️⃣ validate_llm (결과 검증)"}
+    
+    %% Cyclic Correction
+    validate_llm -- "Retry SQL" --> generate_sql
+    validate_llm -- "OK/Fail" --> generate_report["� generate_report (최종 보고서)"]
+    
+    %% End
+    generate_report --> End((종료))
+
+    %% Tool Call Highlight
+    subgraph "Tools & Metadata"
+        T1["🔍 search_tables (Qdrant)"]
+        T2["🔗 expand_tables (Internal)"]
+        T3["🚀 execute_sql (Postgres)"]
+        M1["� Metadata (Column/Type/Comment)"]
+    end
+    
+    retrieve_tables -.-> T1
+    generate_sql -.-> T2
+    execute_sql -.-> T3
+    generate_sql -.-> M1
 ```
+
+### 📋 노드별 상세 설명 및 도구 호출
+
+| 단계 | 노드명 (Node) | 역할 및 상세 설명 | 사용 도구 / 기술 |
+| :--- | :--- | :--- | :--- |
+| **1** | **`parse_request`** | 사용자 자연어를 분석하여 **의도(Intent), 지표(Metric), 시간 범위** 등을 JSON으로 구조화합니다. | `ChatOpenAI` (JSON Mode) |
+| **2** | **`validate_request`** | 구조화된 요청의 보안성과 논리적 타당성을 검증합니다. (예: 미래 시점 조회 방지, 시각 보정) | `ParsedRequestGuard` (Middleware) |
+| **3** | **`retrieve_tables`** | 질문과 관련 있는 테이블을 벡터 공간에서 검색하여 후보군을 확보합니다. | **Tool**: `search_tables` (Qdrant) |
+| **4** | **`select_tables`** | 확보된 후보 중 **Top-K(Elbow Cut)**를 적용하여 실제 쿼리에 사용할 테이블을 확정합니다. | `LLM Rerank` |
+| **5** | **`generate_sql`** | 정밀한 테이블 메타데이터를 참조하여 SQL을 생성합니다. 정보 부족 시 스스로 캐시된 테이블을 확장합니다. | **Tool**: `expand_tables` (Internal Cache) |
+| **6** | **`guard_sql`** | 생성된 SQL이 `DROP` 등 파괴적인 명령을 포함하는지, 문법이 맞는지 사전에 검사합니다. | `SqlOutputGuard` (Middleware) |
+| **7** | **`execute_sql`** | 최종 검증된 SQL을 PostgreSQL 데이터베이스에서 실행하여 결과를 가져옵니다. | **Tool**: `execute_sql` (Postgres) |
+| **8** | **`normalize_result`** | 실행 결과 데이터의 가독성을 높이고, 에러 메시지를 기술적으로 정규화합니다. | `Result Normalizer` |
+| **9** | **`validate_llm`** | 실행 결과가 사용자의 질문에 부합하는지 최종 검증합니다. 부족할 경우 **고쳐쓰기(Retry)**를 요청합니다. | **Cyclic**: `Reflection` & `Self-Healing` |
+| **10** | **`generate_report`** | 최종 데이터와 분석 내용을 바탕으로 사용자가 이해하기 쉬운 자연어 리포트를 작성합니다. | `Markdown Report Gen` |
+
+### 🧠 핵심 기술: 지능형 테이블 캐싱 및 확장
+- **Top-5 Rerank**: 벡터 검색 결과 중 가장 연관성이 높은 5개 테이블을 우선 컨텍스트로 사용합니다.
+- **후보군 캐싱**: TOP-5에 들지 못한 나머지 테이블은 내부 상태에 캐싱해 둡니다.
+- **Dynamic Expansion**: `generate_sql` 노드에서 LLM이 테이블 정보가 더 필요하다고 판단하면, `expand_tables` 툴을 호출하여 캐시에서 관련 테이블을 즉시 추가하고 쿼리를 재생성합니다.
 
 ---
 
