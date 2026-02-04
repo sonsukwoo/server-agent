@@ -5,6 +5,7 @@
 import logging
 from .sync import sync_schema_embeddings_mcp
 from .listener import SchemaListener
+from .trigger_setup import ensure_event_trigger
 
 logger = logging.getLogger("SCHEMA_ORCHESTRATOR")
 
@@ -21,6 +22,12 @@ async def start_listener():
     if _listener:
         logger.info("Listener already running")
         return
+
+    # 1. 이벤트 트리거 확인 및 자동 생성
+    trigger_ready = await ensure_event_trigger()
+    
+    if not trigger_ready:
+        logger.warning("Event trigger is NOT ready. Listener might receive nothing.")
 
     logger.info("Starting schema listener...")
     # 콜백으로 run_once(동기화 로직) 주입

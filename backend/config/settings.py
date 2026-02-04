@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     db_name: str = "server_agent_db" # DB 이름
     db_user: str                     # DB 사용자명 (필수, .env에서 로드)
     db_password: str                 # DB 비밀번호 (필수, .env에서 로드)
+    db_pool_min: int = 1             # DB 풀 최소 연결 수
+    db_pool_max: int = 5             # DB 풀 최대 연결 수
     
     # =================================================================
     # OpenAI LLM 설정
@@ -57,7 +59,6 @@ class Settings(BaseSettings):
     
     # 각 MCP 서버의 HTTP 주소 (docker-compose 서비스명 사용)
     mcp_postgres_url: str = "http://mcp-postgres:8000"
-    mcp_ubuntu_url: str = "http://mcp-ubuntu:8000"
     mcp_qdrant_url: str = "http://mcp-qdrant:8000"
     
     class Config:

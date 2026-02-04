@@ -6,7 +6,7 @@ from datetime import datetime
 import asyncpg
 from config.settings import settings
 
-logger = logging.getLogger("DB_MANAGER")
+logger = logging.getLogger("uvicorn.error")
 
 class DBManager:
     def __init__(self):
@@ -16,7 +16,16 @@ class DBManager:
 
     async def get_pool(self):
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(self.dsn, min_size=5, max_size=20)
+            self._pool = await asyncpg.create_pool(
+                self.dsn, 
+                min_size=settings.db_pool_min, 
+                max_size=settings.db_pool_max
+            )
+            logger.info(
+                "DB pool initialized (min=%s, max=%s)",
+                settings.db_pool_min,
+                settings.db_pool_max,
+            )
         return self._pool
 
     async def ensure_schema(self):

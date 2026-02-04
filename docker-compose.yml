@@ -16,7 +16,7 @@ services:
       - TZ=Asia/Seoul
       - MCP_TRANSPORT=http
       - MCP_POSTGRES_URL=http://mcp-postgres:8000
-      - MCP_UBUNTU_URL=http://mcp-ubuntu:8000
+      - MCP_POSTGRES_URL=http://mcp-postgres:8000
       - MCP_QDRANT_URL=http://mcp-qdrant:8000
     volumes:
       - ./backend:/app
@@ -26,8 +26,6 @@ services:
       - "host.docker.internal:host-gateway" # Allow access to host DB
     depends_on:
       mcp-postgres:
-        condition: service_started
-      mcp-ubuntu:
         condition: service_started
       mcp-qdrant:
         condition: service_started
@@ -42,18 +40,6 @@ services:
       - ./backend/.env
     ports:
       - "9010:8000"
-    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
-    networks:
-      - agent-network
-
-  # MCP - Ubuntu (containerized)
-  mcp-ubuntu:
-    build:
-      context: ./mcp_servers/ubuntu
-      dockerfile: Dockerfile
-    container_name: mcp-ubuntu
-    ports:
-      - "9011:8000"
     command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
     networks:
       - agent-network

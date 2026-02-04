@@ -103,14 +103,10 @@ DROP FUNCTION IF EXISTS monitor.func_check_{rule_id}();
 # 3. Alert Service (Logic & MCP Call)
 # -----------------------------------------------------------------------------
 class AlertService:
-    _pool = None
-
     @classmethod
     async def get_pool(cls):
-        if cls._pool is None:
-            dsn = f"postgresql://{settings.db_user}:{settings.db_password}@{settings.db_host}:{settings.db_port}/{settings.db_name}"
-            cls._pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10)
-        return cls._pool
+        from src.db.db_manager import db_manager
+        return await db_manager.get_pool()
 
     @staticmethod
     async def _execute_mcp_advanced(sql: str):

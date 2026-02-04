@@ -120,8 +120,6 @@ async def query(body: QueryRequest):
             except Exception as e:
                 logger.error("STREAM_ERROR: %s", e)
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
-        elif agent_type == "ubuntu":
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Ubuntu 에이전트는 아직 구현되지 않았습니다.'}, ensure_ascii=False)}\n\n"
         else:
             yield f"data: {json.dumps({'type': 'error', 'message': f'지원하지 않는 에이전트 타입입니다: {agent_type}'}, ensure_ascii=False)}\n\n"
 

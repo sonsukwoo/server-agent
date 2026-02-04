@@ -86,7 +86,6 @@ async def create_mcp_client(server_name: str):
     if settings.mcp_transport == "http":
         url_map = {
             "postgres": settings.mcp_postgres_url,
-            "ubuntu": settings.mcp_ubuntu_url,
             "qdrant": settings.mcp_qdrant_url,
             "qdrant/search": settings.mcp_qdrant_url,
             "qdrant/embeddings": settings.mcp_qdrant_url,
@@ -125,11 +124,6 @@ async def postgres_client():
         yield client
 
 
-@asynccontextmanager
-async def ubuntu_client():
-    """Ubuntu MCP 클라이언트"""
-    async with create_mcp_client("ubuntu") as client:
-        yield client
 
 
 @asynccontextmanager

@@ -4,10 +4,14 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 import json
 import psycopg2
+from psycopg2.pool import ThreadedConnectionPool
+from contextlib import contextmanager
 import os
-from typing import Any, Iterable
+from typing import Any, Iterable, Generator
+import logging
 
 app = Server("postgres-tools")
+logger = logging.getLogger("uvicorn.error")
 
 # DB 연결 설정
 DB_CONFIG = {
@@ -18,6 +22,31 @@ DB_CONFIG = {
     "password": os.getenv("DB_PASSWORD"),
 }
 
+_pool: ThreadedConnectionPool | None = None
+
+
+def _get_pool() -> ThreadedConnectionPool:
+    """Singleton connection pool for PostgreSQL."""
+    global _pool
+    if _pool is None:
+        min_conn = int(os.getenv("DB_POOL_MIN", "1"))
+        max_conn = int(os.getenv("DB_POOL_MAX", "5"))
+        _pool = ThreadedConnectionPool(min_conn, max_conn, **DB_CONFIG)
+        logger.info("DB pool initialized (min=%s, max=%s)", min_conn, max_conn)
+    return _pool
+
+
+@contextmanager
+def _with_conn() -> Generator[Any, None, None]:
+    """Context manager for pooled connections. Ensures proper return to pool."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        yield conn
+    finally:
+        pool.putconn(conn)
+
+
 def _error(message: str) -> list[TextContent]:
     """표준 에러 응답 생성"""
     return [TextContent(type="text", text=message)]
@@ -25,17 +54,16 @@ def _error(message: str) -> list[TextContent]:
 
 def _execute_select(query: str) -> str:
     """SELECT 쿼리를 실행하고 JSON 문자열 결과를 반환"""
-    conn = psycopg2.connect(**DB_CONFIG)
-    cursor = conn.cursor()
-    try:
-        cursor.execute(query)
-        results = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
-        result_list = [dict(zip(columns, row)) for row in results]
-        return json.dumps(result_list, default=str, ensure_ascii=False)
-    finally:
-        cursor.close()
-        conn.close()
+    with _with_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(query)
+            results = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            result_list = [dict(zip(columns, row)) for row in results]
+            return json.dumps(result_list, default=str, ensure_ascii=False)
+        finally:
+            cursor.close()
 
 
 def _is_select_query(query: str) -> bool:
@@ -84,15 +112,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         try:
             # Bypass 모드(INSERT/DELETE 등)는 결과를 반환하지 않을 수 있으므로 분기 처리
             if bypass_validation:
-                conn = psycopg2.connect(**DB_CONFIG)
-                conn.autocommit = True
-                cursor = conn.cursor()
-                try:
-                    cursor.execute(query)
-                    return [TextContent(type="text", text="Command Executed Successfully")]
-                finally:
-                    cursor.close()
-                    conn.close()
+                with _with_conn() as conn:
+                    conn.autocommit = True
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute(query)
+                        return [TextContent(type="text", text="Command Executed Successfully")]
+                    finally:
+                        cursor.close()
             else:
                 # 일반 SELECT (JSON 결과 반환)
                 result_json = _execute_select(query)
@@ -111,6 +138,13 @@ import uvicorn
 import os
 
 http_app = FastAPI()
+
+@http_app.on_event("shutdown")
+async def _close_pool():
+    global _pool
+    if _pool is not None:
+        _pool.closeall()
+        _pool = None
 
 @http_app.get("/tools")
 async def handle_list_tools():
