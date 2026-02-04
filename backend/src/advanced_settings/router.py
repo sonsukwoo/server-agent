@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException
 from typing import List, Any
-from .core import AlertService, AlertRuleCreate, AlertRuleResponse, AlertHistoryResponse
+from . import AlertService, AlertRuleCreate, AlertRuleResponse, AlertHistoryResponse
 
 router = APIRouter(prefix="/advanced", tags=["Advanced Settings"])
 
-@router.post("/rules", response_model=Any)
+@router.post("/rules", response_model=AlertRuleResponse)
 async def create_rule(rule: AlertRuleCreate):
     """새 알림 규칙 등록 (트리거 생성 포함)"""
     try:
@@ -12,7 +12,7 @@ async def create_rule(rule: AlertRuleCreate):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/rules", response_model=List[Any])
+@router.get("/rules", response_model=List[AlertRuleResponse])
 async def list_rules():
     """등록된 규칙 목록 조회"""
     try:
@@ -31,7 +31,7 @@ async def delete_rule(rule_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/alerts", response_model=List[Any])
+@router.get("/alerts", response_model=List[AlertHistoryResponse])
 async def list_alerts():
     """발생한 알림 이력 조회"""
     try:

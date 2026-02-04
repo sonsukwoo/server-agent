@@ -6,8 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from config.settings import settings
 from src.db.db_manager import db_manager
-# 오케스트레이터 함수들을 상위 레벨에서 import하여 스코프 문제 해결
 from src.schema.orchestrator import run_once, start_listener, stop_listener
+from src.advanced_settings import AlertListener
 
 logger = logging.getLogger("LIFESPAN")
 
@@ -39,7 +39,6 @@ async def lifespan(app: FastAPI):
             
     # 3. [알림 시스템] 리스너 시작 (설정 파일 없이 강제 시작)
     try:
-        from src.advanced_settings.core import AlertListener
         alert_listener = AlertListener()
         await alert_listener.start()
         logger.info("LIFESPAN: Alert listener started")
