@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from config.settings import settings
 from src.schema.listener import SchemaListener
-from src.db.chat_store import chat_store
+from src.db.db_manager import db_manager
 from src.schema.sync import sync_schema_embeddings_mcp
 
 logger = logging.getLogger("LIFESPAN")
@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
     
     # 1. 채팅 기록 스키마 초기화 (항상 수행)
     try:
-        await chat_store.ensure_chat_schema()
+        await db_manager.ensure_schema()
     except Exception as e:
         logger.error("CHAT_STORE: ensure schema failed: %s", e)
 
@@ -39,9 +39,22 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("LIFESPAN: Schema sync/listener setup failed: %s", e)
             
+    # 3. [알림 시스템] 리스너 시작 (설정 파일 없이 강제 시작)
+    try:
+        from src.advanced_settings.core import AlertListener
+        alert_listener = AlertListener()
+        await alert_listener.start()
+        logger.info("LIFESPAN: Alert listener started")
+    except Exception as e:
+        logger.error("LIFESPAN: Alert listener setup failed: %s", e)
+
     yield
     
-    # 3. 종료 처리
+    # 4. 종료 처리
     if schema_listener:
         await schema_listener.stop()
         logger.info("LIFESPAN: Schema listener stopped")
+    
+    if alert_listener:
+        await alert_listener.stop()
+        logger.info("LIFESPAN: Alert listener stopped")

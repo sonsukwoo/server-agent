@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.agents.text_to_sql import app as sql_app
-from src.agents.middleware.input_guard import InputGuard
+from src.agents.text_to_sql.middleware.input_guard import InputGuard
 
 logger = logging.getLogger("API_QUERY")
 

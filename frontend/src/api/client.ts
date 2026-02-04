@@ -35,7 +35,19 @@ export interface ChatSessionDetail extends ChatSession {
     messages: ChatMessage[];
 }
 
+export interface ResourceSummary {
+    total: number;
+    active: number;
+    inactive: number;
+}
+
 export class ApiClient {
+    private baseUrl: string;
+
+    constructor(baseUrl: string = API_BASE_URL) {
+        this.baseUrl = baseUrl;
+    }
+
     static async query(
         question: string,
         onStatus?: (status: string) => void
@@ -69,7 +81,7 @@ export class ApiClient {
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // 마지막 잘린 줄은 버퍼에 유지
+            buffer = lines.pop() || '';
 
             for (const line of lines) {
                 const trimmedLine = line.trim();
@@ -86,7 +98,6 @@ export class ApiClient {
                     }
                 } catch (e) {
                     console.error('Failed to parse streaming data:', e, trimmedLine);
-                    // 파싱 에러 시 다음 줄로 계속 진행
                 }
             }
         }
@@ -95,24 +106,65 @@ export class ApiClient {
         return finalResult;
     }
 
-    static async getResourceSummary(): Promise<any> {
-        const response = await fetch(`${API_BASE_URL}/resource-summary`);
+    async getResourceSummary(): Promise<ResourceSummary> {
+        const response = await fetch(`${this.baseUrl}/resource-summary`);
         if (!response.ok) {
             throw new Error('Failed to fetch resource summary');
         }
         return response.json();
     }
 
-    static async getSessions(): Promise<ChatSession[]> {
-        const response = await fetch(`${API_BASE_URL}/chat/sessions`);
+    // -------------------------------------------------------------------------
+    // Advanced Settings (Alerts)
+    // -------------------------------------------------------------------------
+    async createRule(rule: {
+        target_table: string;
+        target_column: string;
+        operator: string;
+        threshold: number;
+        message: string;
+    }): Promise<any> {
+        const response = await fetch(`${this.baseUrl}/advanced/rules`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(rule)
+        });
+        if (!response.ok) throw new Error('Failed to create rule');
+        return response.json();
+    }
+
+    async listRules(): Promise<any[]> {
+        const response = await fetch(`${this.baseUrl}/advanced/rules`);
+        if (!response.ok) throw new Error('Failed to fetch rules');
+        return response.json();
+    }
+
+    async deleteRule(id: number): Promise<void> {
+        const response = await fetch(`${this.baseUrl}/advanced/rules/${id}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error('Failed to delete rule');
+    }
+
+    async listAlerts(): Promise<any[]> {
+        const response = await fetch(`${this.baseUrl}/advanced/alerts`);
+        if (!response.ok) throw new Error('Failed to fetch alerts');
+        return response.json();
+    }
+
+    async deleteAlert(id: number): Promise<void> {
+        const response = await fetch(`${this.baseUrl}/advanced/alerts/${id}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error('Failed to delete alert');
+    }
+
+    async getSessions(): Promise<ChatSession[]> {
+        const response = await fetch(`${this.baseUrl}/chat/sessions`);
         if (!response.ok) {
             throw new Error(`Failed to fetch sessions: ${response.status}`);
         }
         return response.json();
     }
 
-    static async createSession(title: string = "New Chat"): Promise<ChatSession> {
-        const response = await fetch(`${API_BASE_URL}/chat/sessions`, {
+    async createSession(title: string = "New Chat"): Promise<ChatSession> {
+        const response = await fetch(`${this.baseUrl}/chat/sessions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title })
@@ -123,16 +175,16 @@ export class ApiClient {
         return response.json();
     }
 
-    static async getSession(id: string): Promise<ChatSessionDetail> {
-        const response = await fetch(`${API_BASE_URL}/chat/sessions/${id}`);
+    async getSession(id: string): Promise<ChatSessionDetail> {
+        const response = await fetch(`${this.baseUrl}/chat/sessions/${id}`);
         if (!response.ok) {
             throw new Error(`Failed to fetch session ${id}: ${response.status}`);
         }
         return response.json();
     }
 
-    static async deleteSession(id: string): Promise<void> {
-        const response = await fetch(`${API_BASE_URL}/chat/sessions/${id}`, {
+    async deleteSession(id: string): Promise<void> {
+        const response = await fetch(`${this.baseUrl}/chat/sessions/${id}`, {
             method: 'DELETE'
         });
         if (!response.ok) {
@@ -140,8 +192,8 @@ export class ApiClient {
         }
     }
 
-    static async saveMessage(sessionId: string, role: string, content: string, payload?: any): Promise<ChatMessage> {
-        const response = await fetch(`${API_BASE_URL}/chat/sessions/${sessionId}/messages`, {
+    async saveMessage(sessionId: string, role: string, content: string, payload?: any): Promise<ChatMessage> {
+        const response = await fetch(`${this.baseUrl}/chat/sessions/${sessionId}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ role, content, payload_json: payload })

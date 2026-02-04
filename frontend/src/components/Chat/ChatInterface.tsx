@@ -14,6 +14,9 @@ export const ChatInterface: React.FC = () => {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const currentSessionIdRef = useRef<string | null>(null);
 
+    // API Client Instance
+    const apiClient = new ApiClient();
+
     const sortSessionsDesc = (list: any[]) =>
         [...list].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
@@ -35,7 +38,7 @@ export const ChatInterface: React.FC = () => {
     };
 
     const loadSession = async (sessionId: string) => {
-        const detail = await ApiClient.getSession(sessionId);
+        const detail = await apiClient.getSession(sessionId);
         setCurrentSessionId(detail.id);
         ensureSessionState(detail.id);
         setMessages(detail.messages.map(m => ({
@@ -48,7 +51,7 @@ export const ChatInterface: React.FC = () => {
     };
 
     const refreshSessions = async () => {
-        const list = await ApiClient.getSessions();
+        const list = await apiClient.getSessions();
         setSessions(sortSessionsDesc(list));
     };
 
@@ -56,7 +59,7 @@ export const ChatInterface: React.FC = () => {
     useEffect(() => {
         const initSession = async () => {
             try {
-                const list = await ApiClient.getSessions();
+                const list = await apiClient.getSessions();
                 setSessions(sortSessionsDesc(list));
                 if (list.length > 0) {
                     const lastSession = sortSessionsDesc(list)[0];
@@ -114,12 +117,19 @@ export const ChatInterface: React.FC = () => {
         setMessages(prev => [...prev, { role: 'user', text: userQuestion }]);
 
         // 사용자 메시지 DB 저장 (비동기)
-        ApiClient.saveMessage(activeSessionId, 'user', userQuestion).catch(console.error);
+        apiClient.saveMessage(activeSessionId, 'user', userQuestion).catch(console.error);
 
         updateSessionState(activeSessionId, { isLoading: true, status: '사용자 질문 분석 중...' });
         const capturedLogs: string[] = ['사용자 질문 분석 중...'];
 
         try {
+            // Note: query is static or instance? Check ApiClient definition.
+            // If query is static, use ApiClient.query. If instance, use apiClient.query.
+            // Based on previous edit, query was static. Let's check if I changed it.
+            // I changed query to static in previous edit? No, I kept it static in the replacement content?
+            // Wait, looking at step 476 replacement:
+            // "static async query..." is present.
+            // So query is STATIC.
             const result = await ApiClient.query(userQuestion, (newStatus) => {
                 updateSessionState(activeSessionId, { status: newStatus });
                 if (capturedLogs[capturedLogs.length - 1] !== newStatus) {
@@ -144,7 +154,7 @@ export const ChatInterface: React.FC = () => {
                 sql_result: assistantMsg.sqlResult,
                 visual_hint: assistantMsg.visual_hint
             };
-            ApiClient.saveMessage(activeSessionId, 'assistant', assistantMsg.text, payload).catch(console.error);
+            apiClient.saveMessage(activeSessionId, 'assistant', assistantMsg.text, payload).catch(console.error);
             refreshSessions().catch(console.error);
         } catch (error) {
             console.error('Failed to query:', error);
@@ -168,7 +178,7 @@ export const ChatInterface: React.FC = () => {
 
     const startNewChat = async () => {
         try {
-            const session = await ApiClient.createSession();
+            const session = await apiClient.createSession();
             setCurrentSessionId(session.id);
             ensureSessionState(session.id);
             setMessages([]);
@@ -180,7 +190,7 @@ export const ChatInterface: React.FC = () => {
 
     const handleDeleteSession = async (sessionId: string) => {
         try {
-            await ApiClient.deleteSession(sessionId);
+            await apiClient.deleteSession(sessionId);
             const next = sortSessionsDesc(sessions.filter(s => s.id !== sessionId));
             setSessions(next);
             setSessionStates(prev => {

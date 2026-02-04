@@ -25,6 +25,10 @@ app.include_router(chat_router)
 app.include_router(query_router)
 app.include_router(resource_router)
 
+# 고급 설정 (알림) 라우터
+from src.advanced_settings.router import router as advanced_router
+app.include_router(advanced_router)
+
 @app.get("/")
 async def root():
     return {"message": "Server Agent API is running"}

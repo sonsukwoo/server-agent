@@ -67,16 +67,37 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     
     if name == "execute_sql":
         query = arguments.get("query", "")
+        # [SECURITY] Bypass Option for Internal Scripts
+        # 일반 LLM 호출은 False(기본값)이므로 SELECT만 가능
+        # 백엔드 스크립트(core.py)에서만 True로 호출하여 INSERT/DELETE 수행
+        bypass_validation = arguments.get("bypass_validation", False)
         
         if not query:
             return _error("오류: query를 입력해주세요")
         
-        if not _is_select_query(query):
-            return _error("오류: SELECT 쿼리만 실행 가능합니다")
+        # 1. 일반 모드: SELECT만 허용
+        if not bypass_validation:
+            if not _is_select_query(query):
+                return _error("오류: SELECT 쿼리만 실행 가능합니다")
         
+        # 2. 실행 (Bypass 모드이거나 SELECT 쿼리인 경우)
         try:
-            result_json = _execute_select(query)
-            return [TextContent(type="text", text=result_json)]
+            # Bypass 모드(INSERT/DELETE 등)는 결과를 반환하지 않을 수 있으므로 분기 처리
+            if bypass_validation:
+                conn = psycopg2.connect(**DB_CONFIG)
+                conn.autocommit = True
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(query)
+                    return [TextContent(type="text", text="Command Executed Successfully")]
+                finally:
+                    cursor.close()
+                    conn.close()
+            else:
+                # 일반 SELECT (JSON 결과 반환)
+                result_json = _execute_select(query)
+                return [TextContent(type="text", text=result_json)]
+                
         except Exception as e:
             return _error(f"오류: {str(e)}")
     

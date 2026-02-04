@@ -4,10 +4,11 @@ import { ApiClient } from '../../api/client';
 
 export const ResourceDashboard: React.FC = () => {
     const [summary, setSummary] = useState<any>(null);
+    const apiClient = new ApiClient();
 
     const fetchSummary = async () => {
         try {
-            const data = await ApiClient.getResourceSummary();
+            const data = await apiClient.getResourceSummary();
             setSummary(data);
         } catch (error) {
             console.error('Failed to fetch resource summary:', error);
