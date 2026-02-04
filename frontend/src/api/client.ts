@@ -15,7 +15,25 @@ export interface QueryResponse {
     error: string | null;
 }
 
-const API_BASE_URL = 'http://localhost:8000';
+const getApiBaseUrl = () => {
+    // 1. Vite 환경 변수가 명시적으로 지정된 경우만 우선 사용
+    const envUrl = import.meta.env.VITE_API_BASE_URL;
+
+    // 개발 환경 (npm run dev)에서는 8000번 포트로 직접 연결
+    // window.location.port가 있으면(Vite 서버가 보통 5173 사용) 백엔드 주소를 명시함
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        if (window.location.port === '5173' || window.location.port === '3000') {
+            return envUrl || 'http://localhost:8000';
+        }
+    }
+
+    // 2. 배포 환경 (Nginx 프록시 사용) 핵심 로직
+    // 상대 경로 '/api'를 반환하면, 브라우저가 현재 접속한 도메인(터널 주소 등) 뒤에 
+    // 자동으로 /api를 붙여서 Nginx가 백엔드로 전달할 수 있게 합니다.
+    return '/api';
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 export interface ChatSession {
     id: string;
