@@ -13,15 +13,15 @@ from config.settings import settings
 # - ELBOW_THRESHOLD: rerank 점수 엘보우 컷 기준
 # - MIN_KEEP / MAX_KEEP: rerank 결과에서 최소/최대 유지 테이블 수
 # ─────────────────────────────────────────
-RETRIEVE_K = 15
-TOP_K = 5
-EXPAND_STEP = 5
+RETRIEVE_K = 8
+TOP_K = 4
+EXPAND_STEP = 2
 MAX_TABLE_EXPAND = 2
 MAX_SQL_RETRY = 2
-MAX_VALIDATION_RETRY = 1
+MAX_VALIDATION_RETRY = 2
 MAX_TOTAL_LOOPS = 10
 ELBOW_THRESHOLD = 0.15
-MIN_KEEP = 3
-MAX_KEEP = 5
+MIN_KEEP = 2
+MAX_KEEP = 4
 
 TIMEZONE = settings.tz

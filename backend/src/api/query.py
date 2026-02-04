@@ -113,22 +113,21 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
                         
                         # 특정 노드가 시작되거나 완료될 때 상태 메시지 전송
                         status_msg = node_messages.get(node_name)
-                        if status_msg:
+                        
+                        # 툴 사용 또는 상세 로그가 있으면 우선 표시
+                        tool_usage = output.get("last_tool_usage")
+                        if tool_usage:
+                            # 툴 사용 정보가 있으면 상태 메시지보다 우선하거나 병합하여 전송
+                            yield f"data: {json.dumps({'type': 'status', 'message': tool_usage, 'node': node_name}, ensure_ascii=False)}\n\n"
+                        elif status_msg:
                             # 특수 케이스: generate_sql에서 재시도 중인 경우 상세 사유 포함
                             if node_name == "generate_sql" and current_retry > 0:
                                 if last_reason:
-                                    # 사유를 짧게 요약하거나 그대로 표시
-                                    status_msg = f"피드백 반영하여 SQL 재작성 중 (사유: {last_reason}) [재시도 {current_retry}]"
+                                    status_msg = f"피드백 반영하여 SQL 재작성 중 (사유: {last_reason})"
                                 else:
                                     status_msg = f"오류 복구 및 SQL 재작성 중... [재시도 {current_retry}]"
                             
                             yield f"data: {json.dumps({'type': 'status', 'message': status_msg, 'node': node_name}, ensure_ascii=False)}\n\n"
-                        
-                        # 툴 사용 로그가 있으면 이벤트 전송
-                        tool_usage = output.get("last_tool_usage")
-                        if tool_usage:
-                            tool_msg = f"🛠️ [툴 사용] {tool_usage}"
-                            yield f"data: {json.dumps({'type': 'status', 'message': tool_msg, 'node': node_name}, ensure_ascii=False)}\n\n"
                         
                         # 마지막 결과인 경우 전체 데이터 전송
                         if node_name == "generate_report":

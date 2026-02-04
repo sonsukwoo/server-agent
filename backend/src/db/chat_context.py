@@ -8,14 +8,14 @@ from src.db.db_manager import db_manager
 logger = logging.getLogger("uvicorn.error")
 
 
-async def get_recent_messages(session_id: str, limit: int = 2) -> List[Dict[str, str]]:
-    """최근 N개의 메시지를 시간순으로 반환."""
+async def get_recent_messages(session_id: str, limit: int = 4) -> List[Dict[str, str]]:
+    """최근 N개의 메시지를 시간순으로 반환 (payload_json 포함)."""
     pool = await db_manager.get_pool()
     async with pool.acquire() as conn:
         db_manager._log_pool_usage(pool, "acquire")
         rows = await conn.fetch(
             """
-            SELECT role, content
+            SELECT role, content, payload_json
             FROM chat.messages
             WHERE session_id = $1
             ORDER BY created_at DESC
@@ -24,7 +24,21 @@ async def get_recent_messages(session_id: str, limit: int = 2) -> List[Dict[str,
             session_id,
             limit,
         )
-    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+    import json
+    return [
+        {
+            "role": r["role"],
+            "content": r["content"],
+            "payload_json": (
+                json.loads(r["payload_json"])
+                if isinstance(r["payload_json"], str)
+                else r["payload_json"]
+            )
+            if r["payload_json"]
+            else None,
+        }
+        for r in reversed(rows)
+    ]
 
 
 async def get_messages_before_recent(

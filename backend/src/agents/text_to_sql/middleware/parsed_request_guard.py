@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 import logging
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 
 from config.settings import settings
 from src.agents.text_to_sql.common.utils import get_now
@@ -19,41 +19,52 @@ class ParsedRequestGuard:
     """
 
     @staticmethod
-    def validate(parsed: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    def validate(parsed: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any], Optional[str]]:
         """
         요청 검증 및 보정 메인 로직
         :param parsed: LLM이 생성한 파싱 결과 (dict)
-        :return: (is_valid, error_reason, normalized_parsed)
+        :return: (is_valid, error_reason, normalized_parsed, adjustment_info)
         """
         if not isinstance(parsed, dict):
-            return False, "Parsed result must be a dictionary", parsed
+            return False, "Parsed result must be a dictionary", parsed, None
 
         # 1. intent 필수 확인
         if not parsed.get("intent"):
-            return False, "Missing 'intent' field", parsed
+            return False, "Missing 'intent' field", parsed, None
+
+        adjustment_info = None
 
         # 2. Time Range 처리 (Null이면 기본값, 아니면 검증)
         time_range = parsed.get("time_range")
+        is_followup = parsed.get("is_followup", False)
         
         if (not time_range) or (
             isinstance(time_range, dict)
             and not time_range.get("start")
             and not time_range.get("end")
         ):
-            # 기본값 적용 (오늘 00:00 ~ 현재)
-            default_tr = ParsedRequestGuard._create_default_time_range()
-            parsed["time_range"] = default_tr
-            logger.debug("ParsedRequestGuard: time_range was null, defaulted to %s", default_tr)
+            # 후속 질문인 경우: 시간 범위를 강제로 '전체'로 설정하지 않음 (이전 쿼리 상속 유도)
+            if is_followup:
+                # 상속임을 명시하기 위해 비어있는 상태 유지 또는 명시적 플래그 (여기서는 빈 dict + timezone)
+                parsed["time_range"] = {"timezone": settings.tz, "inherit": True}
+                adjustment_info = "후속 질문: 시간 범위가 명시되지 않아 이전 쿼리의 시간을 상속합니다."
+                logger.debug("ParsedRequestGuard: followup detected, time_range set to inherit")
+            else:
+                # 일반 질문인 경우: 기본값 적용 (전체 조회)
+                default_tr = ParsedRequestGuard._create_default_time_range()
+                parsed["time_range"] = default_tr
+                adjustment_info = "시간 범위가 지정되지 않아 전체 기간 조회를 시작합니다."
+                logger.debug("ParsedRequestGuard: time_range was null, defaulted to all_time")
         else:
             # 구조 및 값 검증
             if not isinstance(time_range, dict):
-                return False, "time_range must be a dictionary", parsed
+                return False, "time_range must be a dictionary", parsed, None
             
             start_str = time_range.get("start")
             end_str = time_range.get("end")
             
             if not start_str or not end_str:
-                return False, "time_range must have 'start' and 'end' fields", parsed
+                return False, "time_range must have 'start' and 'end' fields", parsed, None
 
             # 타임존 보정 (settings.tz 사용)
             if not time_range.get("timezone"):
@@ -62,17 +73,18 @@ class ParsedRequestGuard:
             # 시간 유효성 검증 (미래 차단 등) - Auto Clipping 적용
             is_valid_time, time_error, adjusted_end = ParsedRequestGuard._validate_time_values(start_str, end_str)
             if not is_valid_time:
-                return False, time_error, parsed
+                return False, time_error, parsed, None
             
             # Auto Clipping 적용: End time이 조정되었다면 업데이트
             if adjusted_end:
                  parsed["time_range"]["end"] = adjusted_end.isoformat()
+                 adjustment_info = f"미래 시점({end_str})이 포함되어 현재 시각으로 조정했습니다."
                  logger.info("ParsedRequestGuard: Adjusted future end time from %s to %s", end_str, parsed["time_range"]["end"])
             
             # 파싱된 값으로 업데이트 (포맷 보정 등 가능성 고려)
             # 여기서는 검증만 통과하면 원본 유지
 
-        return True, "", parsed
+        return True, "", parsed, adjustment_info
 
     @staticmethod
     def _create_default_time_range() -> Dict[str, Any]:

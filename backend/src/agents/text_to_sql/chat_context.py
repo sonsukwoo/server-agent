@@ -2,6 +2,7 @@
 
 
 import logging
+import json
 from typing import Optional, List, Dict, Any
 from langchain_openai import ChatOpenAI
 
@@ -18,32 +19,82 @@ logger = logging.getLogger("CHAT_HISTORY_TOOL")
 
 async def get_chat_context(session_id: str) -> str:
     """
-    세션 ID에 대한 채팅 컨텍스트(요약 + 최근 메시지)를 문자열로 구성하여 반환합니다.
+    세션 ID에 대한 채팅 컨텍스트(요약 + 최근 메시지 + 이전 SQL/결과)를 문자열로 구성하여 반환합니다.
     (Tool Call 시 LLM에게 제공할 정보)
     """
-    context_prefix = ""
+    context_parts = []
     
     # 1. 요약본 조회
     summary, _, _ = await get_summary_state(session_id)
-    # 2. 최근 대화 조회 (최대 2개)
-    recent_messages = await get_recent_messages(session_id, limit=2)
+    # 2. 최근 대화 조회 (최대 4개)
+    recent_messages = await get_recent_messages(session_id, limit=4)
     
     if summary or recent_messages:
-        context_prefix += "관련 대화 컨텍스트:\n"
-        if summary:
-            # 요약이 있으면 포함
-            context_prefix += f"[Conversation Summary]\n{summary}\n\n"
-        else:
-            context_prefix += "[Conversation Summary]\n(없음)\n\n"
+        context_parts.append("### 관련 대화 컨텍스트")
         
+        # 요약본 추가
+        if summary:
+            context_parts.append(f"[Conversation Summary]\n{summary}")
+        
+        # 최근 메시지 추가 (SQL 결과 및 쿼리 포함)
         if recent_messages:
-            context_prefix += "[Recent Messages]\n"
-            for msg in recent_messages:
-                context_prefix += f"- {msg['role']}: {msg['content']}\n"
-        else:
-            context_prefix += "[Recent Messages]\n(없음)\n"
+            context_parts.append("[Recent Messages]")
+            last_sql_query = None
+            last_sql_result = None
             
-    return context_prefix
+            for msg in recent_messages:
+                role = msg['role']
+                content = msg['content']
+                payload = msg.get('payload_json')
+                
+                context_parts.append(f"- {role}: {content}")
+                
+                # assistant 메시지에 SQL 관련 정보가 있으면 저장
+                if role == 'assistant' and payload:
+                    # payload가 문자열이면 파싱 (DB에서 문자열로 가져오는 경우 대응)
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except Exception:
+                            logger.error(f"Failed to parse payload_json: {payload[:100]}")
+                            payload = None
+                    
+                    if payload and isinstance(payload, dict):
+                        if payload.get('generated_sql'):
+                            last_sql_query = payload.get('generated_sql')
+                        if payload.get('sql_result'):
+                            last_sql_result = payload.get('sql_result')
+            
+            # 마지막 SQL 쿼리/결과 명시 (참조 질문 지원)
+            if last_sql_query or last_sql_result:
+                context_parts.append("\n[Previous Query Context]")
+                
+                # SQL에서 테이블 이름 추출
+                if last_sql_query:
+                    tables = _extract_tables_from_sql(last_sql_query)
+                    if tables:
+                        context_parts.append(f"사용된 테이블: {', '.join(tables)}")
+                    context_parts.append(f"사용된 SQL:\n```sql\n{last_sql_query}\n```")
+                
+                if last_sql_result and isinstance(last_sql_result, list) and len(last_sql_result) > 0:
+                    result_preview = last_sql_result[:3]
+                    result_str = "\n".join([str(row) for row in result_preview])
+                    context_parts.append(f"결과 샘플 ({len(last_sql_result)}행 중 3행):\n{result_str}")
+    
+    return "\n".join(context_parts)
+
+
+def _extract_tables_from_sql(sql: str) -> list[str]:
+    """SQL 쿼리에서 테이블 이름을 추출."""
+    import re
+    tables = []
+    # FROM/JOIN 뒤의 테이블 이름 추출 (schema.table 형식 지원)
+    pattern = r'(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)'
+    matches = re.findall(pattern, sql, re.IGNORECASE)
+    for match in matches:
+        if match.upper() not in ('SELECT', 'WHERE', 'AND', 'OR', 'ON', 'AS'):
+            tables.append(match)
+    return list(set(tables))
 
 
 async def run_background_summarization(session_id: str):

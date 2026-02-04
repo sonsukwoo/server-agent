@@ -47,7 +47,7 @@ export const ChatInterface: React.FC = () => {
             text: m.content,
             sqlResult: m.payload_json?.sql_result,
             visual_hint: m.payload_json?.visual_hint,
-            logs: []
+            logs: m.payload_json?.logs || []
         })));
     };
 
@@ -151,7 +151,7 @@ export const ChatInterface: React.FC = () => {
             }, controller.signal);
 
             const assistantMsg = {
-                role: 'assistant',
+                role: 'assistant' as const,
                 text: result.data?.report || '',
                 sqlResult: result.data?.raw?.sql_result,
                 visual_hint: result.data?.raw?.visual_hint,
@@ -165,7 +165,8 @@ export const ChatInterface: React.FC = () => {
             // 에이전트 응답 DB 저장
             const payload = {
                 sql_result: assistantMsg.sqlResult,
-                visual_hint: assistantMsg.visual_hint
+                visual_hint: assistantMsg.visual_hint,
+                logs: assistantMsg.logs
             };
             apiClient.saveMessage(activeSessionId, 'assistant', assistantMsg.text, payload).catch(console.error);
             refreshSessions().catch(console.error);

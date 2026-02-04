@@ -49,7 +49,7 @@ def normalize_sql(sql: str) -> str:
         raise ValueError("다중 쿼리는 허용되지 않습니다")
 
     if "LIMIT" not in upper_sql:
-        sql = sql.rstrip(";") + " LIMIT 100"
+        sql = sql.rstrip(";") + " LIMIT 500"
 
     return sql
 
