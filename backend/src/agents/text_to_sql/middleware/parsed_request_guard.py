@@ -75,16 +75,11 @@ class ParsedRequestGuard:
         return True, "", parsed
 
     @staticmethod
-    def _create_default_time_range() -> Dict[str, str]:
-        """기본 시간 범위 생성 (오늘 00:00:00 ~ 현재)"""
-        now = get_now()  # timezone-aware datetime (utils.py)
-        
-        # 오늘 00:00:00
-        start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        
+    def _create_default_time_range() -> Dict[str, Any]:
+        """기본 시간 범위 생성 (전체 조회 - 시간 필터 생략)"""
+        # all_time이 True면 SQL 생성 시 시간 조건을 붙이지 않음
         return {
-            "start": start_dt.isoformat(),
-            "end": now.isoformat(),
+            "all_time": True,
             "timezone": settings.tz
         }
 

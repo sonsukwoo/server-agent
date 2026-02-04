@@ -7,7 +7,7 @@ import { ResourceDashboard } from '../Dashboard/ResourceDashboard';
 export const ChatInterface: React.FC = () => {
     const [messages, setMessages] = useState<any[]>([]);
     const [inputValue, setInputValue] = useState('');
-    const [sessionStates, setSessionStates] = useState<Record<string, { isLoading: boolean; status: string }>>({});
+    const [sessionStates, setSessionStates] = useState<Record<string, { isLoading: boolean; status: string; logs: string[] }>>({});
     const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
     const [sessions, setSessions] = useState<any[]>([]);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -24,13 +24,13 @@ export const ChatInterface: React.FC = () => {
     const ensureSessionState = (sessionId: string) => {
         setSessionStates(prev => {
             if (prev[sessionId]) return prev;
-            return { ...prev, [sessionId]: { isLoading: false, status: '' } };
+            return { ...prev, [sessionId]: { isLoading: false, status: '', logs: [] } };
         });
     };
 
-    const updateSessionState = (sessionId: string, patch: Partial<{ isLoading: boolean; status: string }>) => {
+    const updateSessionState = (sessionId: string, patch: Partial<{ isLoading: boolean; status: string; logs: string[] }>) => {
         setSessionStates(prev => {
-            const baseState = prev[sessionId] ?? { isLoading: false, status: '' };
+            const baseState = prev[sessionId] ?? { isLoading: false, status: '', logs: [] };
             return {
                 ...prev,
                 [sessionId]: { ...baseState, ...patch }
@@ -144,10 +144,10 @@ export const ChatInterface: React.FC = () => {
 
         try {
             const result = await ApiClient.query(userQuestion, activeSessionId, (newStatus) => {
-                updateSessionState(activeSessionId, { status: newStatus });
                 if (capturedLogs[capturedLogs.length - 1] !== newStatus) {
                     capturedLogs.push(newStatus);
                 }
+                updateSessionState(activeSessionId, { status: newStatus, logs: [...capturedLogs] });
             }, controller.signal);
 
             const assistantMsg = {
@@ -295,21 +295,12 @@ export const ChatInterface: React.FC = () => {
                     )}
 
                     {isLoading && (
-                        <div className="message assistant thinking">
-                            <div className="chat-content">
-                                <div className="flex gap-4">
-                                    <div className="avatar">
-                                        <Bot size={20} color="#10a37f" />
-                                    </div>
-                                    <div className="message-content">
-                                        <div className="thinking-text">
-                                            {status}
-                                            <span className="dot-animation">...</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                        <MessageBubble message={{
+                            role: 'assistant',
+                            text: status,
+                            isThinking: true,
+                            logs: activeSessionState?.logs || []
+                        }} />
                     )}
 
                     <div ref={messagesEndRef} />

@@ -80,6 +80,7 @@ GENERATE_SQL_SYSTEM = """
 GENERATE_SQL_USER = """
 사용자 의도: {intent}
 시간 범위: {time_start} ~ {time_end}
+(시간 범위가 비어있으면 시간 조건 없이 전체 데이터를 조회한다.)
 메트릭: {metric}
 조건: {condition}
 추가 제약(수정 지시): {user_constraints}
@@ -129,6 +130,7 @@ VALIDATE_RESULT_SYSTEM = """
 """.strip()
 
 VALIDATE_RESULT_USER = """
+현재 시각: {current_time}
 사용자 질문(원문): {user_question}
 시간 범위: {time_start} ~ {time_end}
 추가 제약(수정 지시): {user_constraints}

@@ -522,26 +522,37 @@ body {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: none;
-  border: none;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   transition: all 0.2s;
   font-weight: 500;
+  border-radius: 8px;
+}
+
+.logs-toggle.thinking {
+  background: rgba(16, 163, 127, 0.05);
+  border-color: rgba(16, 163, 127, 0.2);
+  color: var(--accent);
+  font-style: italic;
 }
 
 .logs-toggle:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
 }
 
-.logs-toggle span {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.logs-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.logs-toggle.thinking .dot-animation {
+  margin-left: 2px;
 }
 
 .logs-list {

@@ -134,10 +134,20 @@ def _select_candidates(candidates: list, selected_indices: list[int]) -> list[st
 # Helper (Node 5: generate_sql)
 def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
     failed = state.get("failed_queries", []) or []
+    time_range = state.get("parsed_request", {}).get("time_range", {})
+    
+    # all_time 플래그가 있으면 시간 필터 생략 (빈 문자열)
+    if time_range.get("all_time"):
+        time_start = ""
+        time_end = ""
+    else:
+        time_start = time_range.get("start", "")
+        time_end = time_range.get("end", "")
+    
     return {
         "intent": state.get("parsed_request", {}).get("intent", ""),
-        "time_start": state.get("parsed_request", {}).get("time_range", {}).get("start", ""),
-        "time_end": state.get("parsed_request", {}).get("time_range", {}).get("end", ""),
+        "time_start": time_start,
+        "time_end": time_end,
         "metric": state.get("parsed_request", {}).get("metric", ""),
         "condition": state.get("parsed_request", {}).get("condition", ""),
         "user_constraints": state.get("user_constraints", "") or "",
@@ -181,13 +191,24 @@ def _append_failed_query(failed_queries: list[str], sql: str) -> list[str]:
 
 # Helper (Node 9: validate_llm)
 def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
+    time_range = state.get("parsed_request", {}).get("time_range", {})
+    
+    # all_time 플래그가 있으면 시간 범위를 "전체"로 표시
+    if time_range.get("all_time"):
+        time_start = "전체"
+        time_end = "현재"
+    else:
+        time_start = time_range.get("start", "N/A")
+        time_end = time_range.get("end", "N/A")
+    
     return [
         SystemMessage(content=VALIDATE_RESULT_SYSTEM),
         HumanMessage(
             content=VALIDATE_RESULT_USER.format(
+                current_time=get_current_time(),
                 user_question=state.get("user_question", ""),
-                time_start=state.get("parsed_request", {}).get("time_range", {}).get("start", "N/A"),
-                time_end=state.get("parsed_request", {}).get("time_range", {}).get("end", "N/A"),
+                time_start=time_start,
+                time_end=time_end,
                 user_constraints=state.get("user_constraints", "") or "",
                 generated_sql=current_sql,
                 table_context=state.get("table_context", ""),
