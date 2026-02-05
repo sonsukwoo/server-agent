@@ -1,6 +1,4 @@
-"""
-FastAPI 앱 진입점 (Refactored)
-"""
+"""FastAPI 앱 진입점 및 라우터 설정."""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -9,6 +7,7 @@ from src.api.query import router as query_router
 from src.api.resource import router as resource_router
 from src.api.chat import router as chat_router
 from src.api.schema import router as schema_router
+from src.advanced_settings.router import router as advanced_router
 
 app = FastAPI(title="Server Agent API", lifespan=lifespan)
 
@@ -26,9 +25,6 @@ app.include_router(chat_router)
 app.include_router(query_router)
 app.include_router(resource_router)
 app.include_router(schema_router)
-
-# 고급 설정 (알림) 라우터
-from src.advanced_settings.router import router as advanced_router
 app.include_router(advanced_router)
 
 @app.get("/")

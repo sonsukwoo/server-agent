@@ -1,6 +1,4 @@
-"""
-스키마 해시 계산 및 저장 유틸리티
-"""
+"""스키마 해시 계산 및 파일 저장 유틸리티."""
 import json
 import hashlib
 import logging
@@ -10,7 +8,7 @@ from config.settings import settings
 logger = logging.getLogger("SCHEMA_HASH")
 
 def calculate_schema_hash(docs: list[dict]) -> str:
-    """스키마 문서 리스트의 해시값 계산"""
+    """문서 리스트의 정규화된 해시값 계산."""
     payload = []
     for doc in docs:
         payload.append(
@@ -29,12 +27,12 @@ def calculate_schema_hash(docs: list[dict]) -> str:
                 ],
             }
         )
-    # 정렬된 JSON 문자열로 변환하여 일관된 해시 보장
+    # 정렬된 JSON으로 변환하여 일관성 보장
     canonical = json.dumps(payload, ensure_ascii=True, sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 def read_hash_file() -> str | None:
-    """저장된 해시값 읽기"""
+    """저장된 해시 파일 읽기."""
     path = Path(settings.schema_hash_file)
     try:
         if path.exists():
@@ -44,7 +42,7 @@ def read_hash_file() -> str | None:
     return None
 
 def write_hash_file(schema_hash: str) -> None:
-    """해시값 저장"""
+    """해시값 파일 저장."""
     path = Path(settings.schema_hash_file)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

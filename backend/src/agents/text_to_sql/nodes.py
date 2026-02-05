@@ -1,11 +1,11 @@
-"""Text-to-SQL 에이전트 노드/미들웨어 (통합형)"""
+"""Text-to-SQL 에이전트 노드 및 미들웨어 통합 모듈."""
 import json
 import re
+import logging
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
-import logging
 from config.settings import settings
 from src.agents.mcp_clients.connector import postgres_client, qdrant_search_client
 from src.agents.text_to_sql.middleware.parsed_request_guard import ParsedRequestGuard
@@ -41,8 +41,8 @@ structured_llm_fast = llm_fast.bind(response_format={"type": "json_object"})
 # Helper functions (used by specific nodes)
 # ─────────────────────────────────────────
 
-# Helper (Node 3: select_tables)
 def _format_candidates_for_rerank(candidates: list, top_col_limit: int = 5) -> str:
+    """리랭킹을 위해 후보 테이블 정보를 문자열로 포맷팅."""
     lines = []
     for i, c in enumerate(candidates, 1):
         cols = c.get("columns", []) or []
@@ -69,8 +69,8 @@ def _format_candidates_for_rerank(candidates: list, top_col_limit: int = 5) -> s
     return "\n\n".join(lines)
 
 
-# Helper (Node 3: select_tables)
 async def _call_rerank_llm(parsed: dict, candidates_str: str) -> list | None:
+    """LLM을 호출하여 테이블 리랭킹 수행 (JSON 응답)."""
     messages = [
         SystemMessage(content=RERANK_TABLE_SYSTEM),
         HumanMessage(
@@ -91,8 +91,8 @@ async def _call_rerank_llm(parsed: dict, candidates_str: str) -> list | None:
     return parsed_json
 
 
-# Helper (Node 3: select_tables)
 def _parse_rerank_response(response_json: list, candidates_len: int) -> list[int] | None:
+    """리랭킹 LLM 응답 파싱 및 Elbow Cut 적용."""
     if not isinstance(response_json, list):
         return None
         
@@ -120,9 +120,8 @@ def _parse_rerank_response(response_json: list, candidates_len: int) -> list[int
     return [s["index"] for s in final_scored]
 
 
-# Helper (Node 3: select_tables)
 def _select_candidates(candidates: list, selected_indices: list[int]) -> list[str]:
-    """선택된 인덱스들을 바탕으로 테이블명 리스트 반환 (1-based index -> 0-based 접근)"""
+    """선택된 인덱스(1-based)를 기반으로 테이블명 리스트 반환."""
     selected_names = []
     for idx in selected_indices:
         real_idx = idx - 1
@@ -131,9 +130,8 @@ def _select_candidates(candidates: list, selected_indices: list[int]) -> list[st
     return selected_names
 
 
-# Helper (후속 질문용 테이블 추출)
 def _extract_tables_from_sql(sql: str) -> list[str]:
-    """SQL 쿼리에서 테이블 이름을 추출."""
+    """SQL 쿼리에서 FROM/JOIN 테이블 이름 추출."""
     tables = []
     # FROM/JOIN 뒤의 테이블 이름 추출 (schema.table 형식 지원)
     pattern = r'(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)'
@@ -144,11 +142,9 @@ def _extract_tables_from_sql(sql: str) -> list[str]:
     return list(set(tables))
 
 
-# Helper (시간 범위 추출)
 def _extract_time_range_from_sql(sql: str) -> tuple[str, str]:
-    """SQL에서 ts BETWEEN A AND B 구문을 찾아 A, B를 반환"""
+    """SQL에서 ts BETWEEN A AND B 구문을 찾아 A, B 시간값 반환."""
     # 예: ts BETWEEN '2023-01-01T00:00:00' AND '2023-01-02T00:00:00'
-    # 작은따옴표 처리
     pattern = r"ts\s+BETWEEN\s+'([^']+)'\s+AND\s+'([^']+)'"
     match = re.search(pattern, sql, re.IGNORECASE)
     if match:
@@ -156,8 +152,8 @@ def _extract_time_range_from_sql(sql: str) -> tuple[str, str]:
     return "", ""
 
 
-# Helper (Node 5: generate_sql)
 def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
+    """SQL 생성 프롬프트에 주입할 변수 딕셔너리 구성."""
     failed = state.get("failed_queries", []) or []
     time_range = state.get("parsed_request", {}).get("time_range", {})
 
@@ -179,7 +175,6 @@ def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
         inherit_end = ""
     elif time_range.get("inherit"):
         time_mode = "inherit"
-        # 이전 SQL에서 시간 추출 시도
         p_start, p_end = _extract_time_range_from_sql(previous_sql)
         if p_start and p_end:
              time_start = f"{p_start} (상속됨)"
@@ -187,7 +182,6 @@ def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
              inherit_start = p_start
              inherit_end = p_end
         else:
-             # 상속할 시간이 없으면 빈 값으로 두어 재질문 유도
              time_start = ""
              time_end = ""
              inherit_start = ""
@@ -219,8 +213,8 @@ def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
     }
 
 
-# Helper (Node 5: generate_sql)
 def _build_generate_sql_messages(inputs: dict) -> list:
+    """SQL 생성용 LLM 메시지 리스트 생성."""
     return [
         SystemMessage(content=GENERATE_SQL_SYSTEM),
         HumanMessage(
@@ -242,16 +236,16 @@ def _build_generate_sql_messages(inputs: dict) -> list:
     ]
 
 
-# Helper (Node 9: validate_llm)
 def _append_failed_query(failed_queries: list[str], sql: str) -> list[str]:
+    """실패한 쿼리 히스토리 업데이트 (최근 3개 유지)."""
     if not sql:
         return failed_queries
     failed_queries.append(sql)
     return failed_queries[-3:]
 
 
-# Helper (Node 9: validate_llm)
 def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
+    """결과 검증용 LLM 메시지 리스트 생성."""
     time_range = state.get("parsed_request", {}).get("time_range", {})
     
     # Time Mode 결정
@@ -261,7 +255,6 @@ def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
         time_end = "현재"
     elif time_range.get("inherit"):
         time_mode = "inherit"
-        # 이전 SQL 쿼리 추출 (컨텍스트에서)
         user_question = state.get("user_question", "")
         previous_sql = ""
         if "[Previous Query Context]" in user_question and "```sql" in user_question:
@@ -270,7 +263,6 @@ def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
             if sql_match:
                 previous_sql = sql_match.group(1).strip()
         
-        # 이전 SQL에서 시간 추출 시도
         p_start, p_end = _extract_time_range_from_sql(previous_sql)
         if p_start and p_end:
              time_start = f"{p_start} (상속됨)"
@@ -303,10 +295,10 @@ def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
     ]
 
 
-# Helper (Node 9: validate_llm)
 def _handle_unnecessary_tables(
     state: TextToSQLState, unnecessary: list[str], failed_queries: list[str]
 ):
+    """불필요한 테이블 제거 및 재시도 상태 구성."""
     if not unnecessary:
         return None
     selected = state.get("selected_tables", []) or []
@@ -327,8 +319,8 @@ def _handle_unnecessary_tables(
     }
 
 
-# Helper (Node 9: validate_llm)
 def _format_failed_feedback(feedback: str, hint: str) -> str:
+    """검증 실패 피드백 및 힌트 포맷팅."""
     full_feedback = f"### 이전 시도 실패 원인\n{feedback}\n"
     if hint:
         full_feedback += f"\n### 올바른 쿼리 예시 및 힌트\n{hint}\n"
@@ -340,9 +332,7 @@ def _format_failed_feedback(feedback: str, hint: str) -> str:
 # ─────────────────────────────────────────
 
 async def parse_request(state: TextToSQLState) -> dict:
-    # [역할] 사용자 자연어 질문을 구조화된 JSON으로 변환
-    # [입력] user_question
-    # [출력] parsed_request, is_request_valid/request_error(파싱 실패 시)
+    """사용자 질의 파싱: 자연어 -> JSON 구조화."""
     logger.info("TEXT_TO_SQL:parse_request start")
     messages = [
         SystemMessage(content=PARSE_REQUEST_SYSTEM),
@@ -352,10 +342,8 @@ async def parse_request(state: TextToSQLState) -> dict:
         )),
     ]
     
-    # 1) JSON Mode 적용 (전역 바인딩 객체 사용)
     try:
         response = await structured_llm_fast.ainvoke(messages)
-        # JSON Mode이므로 바로 json.loads 사용 (명확성)
         parsed = json.loads(response.content)
         error = None
     except json.JSONDecodeError as e:
@@ -367,14 +355,12 @@ async def parse_request(state: TextToSQLState) -> dict:
         }
     except Exception as e:
         logger.error("TEXT_TO_SQL:parse_request llm_error=%s", e)
-        # LLM 호출 자체 실패 시
         return {
             "parsed_request": {},
             "is_request_valid": False,
             "request_error": f"LLM 호출 실패: {str(e)}",
         }
 
-    # 2) 타입 체크 (dict가 아닌 경우)
     if not isinstance(parsed, dict):
         logger.error("TEXT_TO_SQL:parse_request invalid_type=%s", type(parsed))
         return {
@@ -383,8 +369,7 @@ async def parse_request(state: TextToSQLState) -> dict:
             "request_error": "LLM 응답이 JSON 객체(dict) 형식이 아닙니다",
         }
 
-    # 3) 기본값 보정 로직
-    # Intent 처리
+    # 기본값 보정
     if not parsed.get("intent"):
         parsed["intent"] = "unknown"
 
@@ -395,14 +380,8 @@ async def parse_request(state: TextToSQLState) -> dict:
 # Node 2: validate_request
 # ─────────────────────────────────────────
 
-
-# 시간 범위 추출/보정 로직은 제거됨 (LLM time_range 그대로 사용).
-
-
 async def validate_request(state: TextToSQLState) -> dict:
-    # [역할] 파싱 결과의 유효성 검증 및 기본값 보정 (Middleware 위임)
-    # [입력] parsed_request
-    # [출력] is_request_valid, request_error (실패 시 결과 상태 error로 전환)
+    """파싱된 질의 유효성 검증 및 보정 (미들웨어 위임)."""
     logger.info("TEXT_TO_SQL:validate_request start")
 
     if state.get("is_request_valid") is False:
@@ -429,7 +408,6 @@ async def validate_request(state: TextToSQLState) -> dict:
             "last_tool_usage": f"검증 실패: {error_reason}"
         }
         
-    # 성공 로깅
     log_msg = "질문 검증 완료"
     if adjustment_info:
         log_msg = f"질문 보정: {adjustment_info}"
@@ -442,21 +420,17 @@ async def validate_request(state: TextToSQLState) -> dict:
     }
 
 
-
 # ─────────────────────────────────────────
 # Node 3: retrieve_tables
 # ─────────────────────────────────────────
 
 async def retrieve_tables(state: TextToSQLState) -> dict:
-    # [역할] 벡터 검색으로 후보 테이블 확보 + 캐시
-    # [입력] user_question, parsed_request
-    # [출력] table_candidates, candidate_offset
+    """테이블 검색: 후속 질문 확인 또는 Qdrant 벡터 검색."""
     user_question = state["user_question"]
     parsed_request = state.get("parsed_request", {})
     
-    # 후속 질문 감지: is_followup이 true면 컨텍스트에서 이전 테이블 추출
+    # 후속 질문 처리: 이전 쿼리의 테이블 재사용
     if parsed_request.get("is_followup"):
-        # 컨텍스트에서 이전 SQL 추출
         previous_sql = ""
         if "[Previous Query Context]" in user_question and "```sql" in user_question:
             import re
@@ -465,20 +439,18 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
                 previous_sql = sql_match.group(1).strip()
         
         if previous_sql:
-            # SQL에서 테이블 이름 추출
             tables = _extract_tables_from_sql(previous_sql)
             if tables:
-                logger.info("TEXT_TO_SQL:retrieve_tables skipped (followup, extracted tables: %s)", tables)
-                # 테이블 정보를 간단한 형태로 반환 (Qdrant 검색 없이)
+                logger.info("TEXT_TO_SQL:retrieve_tables skipped (followup)")
                 candidates = [{"table_name": t, "score": 1.0} for t in tables]
                 return {
                     "table_candidates": candidates,
                     "selected_tables": tables,
                     "candidate_offset": len(tables),
-                    "last_tool_usage": f"후속 질문: 이전 쿼리의 테이블({', '.join(tables)})을 재사용합니다."
+                    "last_tool_usage": f"후속 질문: 이전 쿼리에 사용된 테이블 재사용 ({', '.join(tables)})"
                 }
     
-    # Qdrant MCP 호출
+    # Qdrant 검색
     candidates = []
     try:
         async with qdrant_search_client() as client:
@@ -489,25 +461,16 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
             if result_json:
                 try:
                     candidates = json.loads(result_json)
-                    logger.info(
-                        "Qdrant MCP search_tables OK: query_len=%s top_k=%s candidates=%s",
-                        len(user_question),
-                        RETRIEVE_K,
-                        len(candidates) if isinstance(candidates, list) else "non-list",
-                    )
-                except json.JSONDecodeError as e:
-                    logger.error(f"Qdrant MCP JSON Parsing Error: {e}, Content: {result_json[:100]}...")
+                    logger.info("Qdrant MCP search_tables OK")
+                except json.JSONDecodeError:
                     candidates = []
-                except Exception as e:
-                    # 기타 예상치 못한 파싱 에러
-                    logger.error(f"Qdrant MCP Parsing Unknown Error: {e}")
+                except Exception:
                     candidates = []
     except Exception as e:
-        # MCP 호출 실패 시 로그 혹은 에러 처리 (여기서는 빈 리스트로 진행하여 폴백 유도)
         logger.error(f"Qdrant MCP Tool Call Error: {e}")
         candidates = []
 
-    # TEMP: view 제외 (추후 제거 예정)
+    # TEMP: view 제외 로직
     filtered = []
     for c in candidates:
         name = c.get("table_name", "")
@@ -527,7 +490,6 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
 
     return {
         "table_candidates": filtered,
-        # 확장은 select_tables에서 실제 선택 개수 기준으로 설정
         "candidate_offset": 0,
         "last_tool_usage": f"벡터 검색 완료: {len(filtered)}개의 후보 테이블 확보"
     }
@@ -538,13 +500,10 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 
 async def select_tables(state: TextToSQLState) -> dict:
-    # [역할] 후보 테이블 중 상위 TOP_K 선택 + 스키마 컨텍스트 구성
-    # [입력] table_candidates, parsed_request
-    # [출력] selected_tables, table_context
+    """후보 테이블 중 최적의 테이블 선택 (LLM Rerank)."""
     parsed = state.get("parsed_request", {})
     candidates = state.get("table_candidates", []) or []
 
-    # 1. 후보 없음 즉시 종료
     if not candidates:
         logger.warning("TEXT_TO_SQL:select_tables no candidates found")
         return {
@@ -553,34 +512,25 @@ async def select_tables(state: TextToSQLState) -> dict:
             "request_error": "후보 테이블이 없습니다",
         }
 
-    # 2. Rerank 준비
+    # 1. Rerank 준비 및 실행
     candidates_str = _format_candidates_for_rerank(candidates)
-    
-    # 3. LLM Rerank 실행
     response_json = await _call_rerank_llm(parsed, candidates_str)
     
     selected_indices = None
     if response_json:
-        # 4. 결과 파싱 및 Elbow Cut
         selected_indices = _parse_rerank_response(response_json, len(candidates))
         if selected_indices:
-            logger.info("TEXT_TO_SQL:select_tables rerank_success indices=%s", selected_indices)
+            logger.info("TEXT_TO_SQL:select_tables rerank_success")
     
-    # 5. 폴백 로직 (Rerank 실패 또는 결과 0개)
+    # 2. 폴백: 실패 시 상위 N개 선택
     if not selected_indices:
         fallback_count = min(TOP_K, len(candidates))
         selected_indices = list(range(1, fallback_count + 1))
-        logger.info("TEXT_TO_SQL:select_tables fallback applied indices=%s", selected_indices)
+        logger.info("TEXT_TO_SQL:select_tables fallback applied")
 
-    # 6. 최종 선택 및 컨텍스트 생성 (중복 제거된 인덱스 사용)
-    # _select_candidates 내부에서 중복 제거됨.
-    # 하지만 build_table_context용 객체 리스트도 중복 제거된 인덱스를 써야 함.
-    # 따라서 여기서 중복 제거를 명시적으로 한 번 하고 넘기는 것이 안전함.
+    # 3. 최종 선택 및 컨텍스트 생성
     unique_indices = list(dict.fromkeys(selected_indices))
-    
     selected_names = _select_candidates(candidates, unique_indices)
-    
-    # 실제 객체 리스트 확보 (build_table_context용)
     selected_objects = [candidates[i-1] for i in unique_indices if 1 <= i <= len(candidates)]
     table_context = build_table_context(selected_objects)
 
@@ -589,7 +539,6 @@ async def select_tables(state: TextToSQLState) -> dict:
     return {
         "selected_tables": selected_names,
         "table_context": table_context,
-        # 확장 시작점은 현재 선택된 개수 기준
         "candidate_offset": len(selected_objects),
         "last_tool_usage": f"연관성 높은 테이블 선택: {', '.join(selected_names)}"
     }
@@ -600,71 +549,43 @@ async def select_tables(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 
 async def generate_sql(state: TextToSQLState) -> dict:
-    # [역할] 선택된 테이블 컨텍스트로 SQL 생성
-    # [입력] parsed_request, table_context, feedback_to_sql
-    # [출력] generated_sql
-    
-    # 1. 입력 데이터 준비
+    """SQL 쿼리 생성 (테이블 부족 시 Tool 호출로 확장)."""
     inputs = _build_sql_prompt_inputs(state)
+    logger.info("TEXT_TO_SQL:generate_sql start")
 
-    # 1-1. 상속 실패 시에도 이전 SQL을 유지하도록 유도
-    # 시간 조건이 없더라도 기존 WHERE/필터는 유지되어야 함
-    # (상속 실패로 전체 범위를 강제 전환하지 않음)
-    time_fallback = False
-
-    logger.info(
-        "TEXT_TO_SQL:generate_sql start retry=%s total_loops=%s table_count=%s failed_count=%s",
-        state.get("sql_retry_count", 0),
-        state.get("total_loops", 0),
-        inputs["_meta_table_count"],
-        inputs["_meta_failed_count"],
-    )
-
-    # 2. 메시지 생성
     messages = _build_generate_sql_messages(inputs)
 
-    # 3. LLM 호출 및 툴 확장 (최대 1회 재시도 루프)
     loop_count = 0
     max_loops = 2
     
-    current_state = state.copy()  # 로컬 상태 복사
-    last_tool_usage_log = None  # 툴 사용 로그 임시 저장
+    current_state = state.copy()
+    last_tool_usage_log = None
 
     while loop_count < max_loops:
         loop_count += 1
         response = await llm_smart.ainvoke(messages)
         parsed, error = parse_json_from_llm(response.content)
 
-        # JSON 파싱 실패 시, 원본 텍스트를 SQL로 간주하고 시도 (Fallback)
+        # JSON 파싱 실패 -> Raw SQL Fallback
         if error or not parsed:
-            logger.warning("TEXT_TO_SQL:generate_sql JSON parse failed, assuming raw SQL. Error: %s", error)
-            # 마크다운 제거 정도만 수행
+            logger.warning("TEXT_TO_SQL:generate_sql JSON parse failed, assuming raw SQL")
             raw_sql = response.content.strip()
-            # 간단한 정규화 시도
             try:
                 normalized = normalize_sql(raw_sql)
                 return {"generated_sql": normalized, "sql_guard_error": ""}
             except ValueError:
-                # 정규화 실패 시 그냥 반환하여 guard_sql에서 처리
                 return {"generated_sql": raw_sql, "sql_guard_error": ""}
 
         needs_tables = parsed.get("needs_more_tables", False)
         sql_text = parsed.get("sql", "")
 
-        # A. 테이블 확장 요청
+        # A. 테이블 확장 요청 처리
         if needs_tables:
-            # 이미 확장 실패 경험이 있다면 -> 무시하고 SQL 반환 (혹은 Fallback 시도)
             if current_state.get("table_expand_failed"):
-                logger.info("TEXT_TO_SQL:generate_sql expand requested but already failed. Using generated SQL.")
-                # LLM이 fallback SQL을 줬으면 그것 사용
-                if sql_text:
-                     break # 루프 종료하고 결과 반환
-                
-                # 만약 SQL도 비어있다면 Force Generation 요청 처리 (다음 루프에서 해결되길 기대)
-                # 여기서는 명시적으로 실패 로그 남기고 빈 SQL 반환 가능성 있음
-                break
+                # 이미 실패했으면 무시하고 진행
+                if sql_text: break
+                break # 빈 SQL이면 다음 단계에서 에러 처리
 
-            # 확장 시도
             logger.info("TEXT_TO_SQL:generate_sql Triggering tool: expand_tables")
             
             candidates = current_state.get("table_candidates", []) or []
@@ -673,55 +594,40 @@ async def generate_sql(state: TextToSQLState) -> dict:
             
             new_selected, new_context, new_offset = expand_tables_tool(selected, candidates, offset)
             
-            # 확장 결과 확인
             if new_offset > offset:
-                # 성공
+                # 확장 성공
                 added_count = new_offset - offset
                 tool_msg = f"테이블 확장 툴 실행 (추가됨: {new_selected[-added_count:]})"
                 logger.info(tool_msg)
                 last_tool_usage_log = tool_msg
                 
-                # 상태 갱신
                 current_state["selected_tables"] = new_selected
                 current_state["table_context"] = new_context
                 current_state["candidate_offset"] = new_offset
                 current_state["table_expand_attempted"] = True
                 
-                # 다음 루프를 위해 inputs/messages 재생성
+                # 입력 재생성 후 루프 재시작
                 inputs["table_name"] = ", ".join(new_selected)
                 inputs["columns"] = new_context
                 inputs["_meta_table_count"] = len(new_selected)
                 messages = _build_generate_sql_messages(inputs)
-                
                 continue
-                
             else:
-                # 실패 (더 이상 후보 없음)
-                logger.info("TEXT_TO_SQL:generate_sql expand requested but no candidates.")
-                
+                # 확장 실패 (후보 없음)
                 fail_msg = "테이블 확장 시도했으나 추가 후보 없음"
                 last_tool_usage_log = fail_msg
 
                 current_state["table_expand_failed"] = True
                 current_state["table_expand_attempted"] = True
                 
-                # 프롬프트에 알림
                 inputs["validation_reason"] += f"\n(시스템 알림: {fail_msg}. 현재 정보로 진행하세요.)"
                 messages = _build_generate_sql_messages(inputs)
-                
                 continue
 
-        # B. 정상 반환 (SQL 생성됨)
+        # B. SQL 생성 성공
         break
-
-    # 루프 종료 후 결과 구성
-    # 마지막 루프의 sql_text 사용 (JSON 파싱 성공 시)
-    # 파싱된 sql_text가 없으면(확장하다가 루프 끝난 경우 등) 빈 문자열일 수 있음
     
-    # 마지막 응답이 JSON이 아니었거나 에러였으면 위에서 처리됨.
-    # 여기까지 왔다는 건 'JSON 파싱 성공' AND ('needs_tables=False' OR '확장 실패 후 break')
-    
-    # 안전장치: sql_text가 없을 수 있음 (루프 한도 초과 등)
+    # 결과 반환 구성
     if not sql_text and loop_count >= max_loops:
          sql_text = ""
          state_error = "Generating SQL Loop Limit exceeded"
@@ -743,7 +649,6 @@ async def generate_sql(state: TextToSQLState) -> dict:
         if k in current_state:
             result_update[k] = current_state[k]
 
-    # 툴 사용 로그
     if last_tool_usage_log:
         result_update["last_tool_usage"] = last_tool_usage_log
 
@@ -758,13 +663,9 @@ async def generate_sql(state: TextToSQLState) -> dict:
 sql_guard = SqlOutputGuard()
 
 async def guard_sql(state: TextToSQLState) -> dict:
-    # [역할] generated_sql 정규화 + OutputGuard 안전성 검사
-    # [입력] generated_sql
-    # [출력] generated_sql (normalized) or sql_guard_error
-    
+    """생성된 SQL의 안전성 검사 (Syntax, 금지어 등)."""
     current_sql = state.get("generated_sql", "")
     
-    # 1. 빈 SQL 체크
     if not current_sql:
         logger.warning("TEXT_TO_SQL:guard_sql blocked: SQL is empty")
         return {
@@ -774,19 +675,17 @@ async def guard_sql(state: TextToSQLState) -> dict:
             "total_loops": state.get("total_loops", 0) + 1,
         }
 
-    # 2. 가드 검증 (싱글톤 사용)
     is_valid, result_or_error = sql_guard.validate_sql(current_sql)
     
     if not is_valid:
         logger.warning(f"TEXT_TO_SQL:guard_sql blocked: {result_or_error}")
         return {
-            "generated_sql": current_sql, # 원본 유지 (디버깅용)
+            "generated_sql": current_sql,
             "sql_guard_error": result_or_error,
             "sql_retry_count": state.get("sql_retry_count", 0) + 1,
             "total_loops": state.get("total_loops", 0) + 1,
         }
 
-    # Pass
     logger.info("TEXT_TO_SQL:guard_sql passed")
     return {
         "generated_sql": result_or_error, # 정규화된 SQL
@@ -799,67 +698,47 @@ async def guard_sql(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 
 async def execute_sql(state: TextToSQLState) -> dict:
-    # [역할] MCP 도구를 통해 SQL 실행 (Refactored)
-    # [입력] generated_sql
-    # [출력] sql_result, sql_error, raw_sql_result(디버깅용)
-    
-    current_sql = state.get("generated_sql", "").strip()
-    logger.info("TEXT_TO_SQL:execute_sql start")
+    """SQL 실행 및 결과 반환 (PostgreSQL MCP)."""
+    sql = state.get("generated_sql")
+    logger.info(f"TEXT_TO_SQL:execute_sql executing: {sql[:50]}...")
 
-    # 1. SQL 유효성 체크
-    if not current_sql:
-        logger.warning("TEXT_TO_SQL:execute_sql empty_sql")
-        return {
-            "sql_result": [],
-            "sql_error": "SQL이 비어있음",
-            "raw_sql_result": ""
-        }
-
-    raw_sql_result = ""
-    sql_result = []
-    
     try:
-        # 2. MCP 호출
         async with postgres_client() as client:
-            raw_sql_result = await client.call_tool("execute_sql", {"query": current_sql})
+            result_json = await client.call_tool("execute_sql", {"query": sql})
+            
+            # 결과가 문자열(JSON)로 오므로 파싱
+            if isinstance(result_json, str):
+                try:
+                    result_data = json.loads(result_json)
+                except json.JSONDecodeError:
+                    # 문자열 그대로인 경우 (에러 메시지 등)
+                    result_data = result_json
+            else:
+                result_data = result_json
 
-        # 3. JSON 파싱
-        # MCP 응답은 문자열 형태의 JSON으로 가정
-        try:
-           sql_result = json.loads(raw_sql_result)
-        except json.JSONDecodeError as e:
-            logger.error(f"TEXT_TO_SQL:execute_sql parse_fail raw={raw_sql_result[:100]}... error={e}")
+            # MCP 에러 응답 처리 (dict 형태일 때)
+            if isinstance(result_data, dict) and result_data.get("is_error"):
+                return {
+                    "sql_result": [],
+                    "sql_error": result_data.get("message", "Unknown DB Error"),
+                }
+            
+            # 리스트가 아니면 빈 리스트로
+            if not isinstance(result_data, list):
+                result_data = []
+
             return {
-                "sql_result": [],
-                "sql_error": "JSON 파싱 실패",
-                "raw_sql_result": raw_sql_result
+                "sql_result": result_data,
+                "sql_error": None,
+                "last_tool_usage": f"SQL 실행 완료 (결과 {len(result_data)}행)"
             }
-
-        # 4. 타입 검증 (List 여부)
-        if not isinstance(sql_result, list):
-            logger.error(f"TEXT_TO_SQL:execute_sql type_fail type={type(sql_result)}")
-            return {
-                "sql_result": [],
-                "sql_error": "결과 형식 오류 (List가 아님)",
-                "raw_sql_result": raw_sql_result
-            }
-
-        # 5. 성공
-        logger.info(f"TEXT_TO_SQL:execute_sql success rows={len(sql_result)}")
-        return {
-            "sql_result": sql_result,
-            "sql_error": "",
-            "raw_sql_result": raw_sql_result,
-            "last_tool_usage": f"데이터베이스 조회 완료 ({len(sql_result)}개 행)"
-        }
 
     except Exception as e:
-        # MCP 호출 자체 에러 등
-        logger.error(f"TEXT_TO_SQL:execute_sql mcp_error={e}")
+        logger.error(f"TEXT_TO_SQL:execute_sql failed: {e}")
         return {
             "sql_result": [],
             "sql_error": str(e),
-            "raw_sql_result": raw_sql_result
+            "last_tool_usage": f"SQL 실행 에러: {str(e)}"
         }
 
 
@@ -868,220 +747,90 @@ async def execute_sql(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 
 async def normalize_result(state: TextToSQLState) -> dict:
-    # [역할] 실행 결과/에러를 표준 상태로 분류 (Node 8)
-    # [입력] sql_result, sql_error
-    # [출력] result_status, verdict, validation_reason, feedback_to_sql
-    
+    """실행 결과 정규화 및 에러 분류."""
     sql_error = state.get("sql_error")
     
-    # 1. SQL 실행 에러 발생 시
     if sql_error:
-        verdict, reason = classify_sql_error(sql_error)
-        logger.error("TEXT_TO_SQL:normalize_result sql_error=%s verdict=%s", sql_error, verdict)
+        # 에러 분류
+        error_type = classify_sql_error(str(sql_error))
         
+        # 재시도 카운트 증가
+        retry_count = state.get("sql_retry_count", 0) + 1
+        total_loops = state.get("total_loops", 0) + 1
+        
+        # 실패한 SQL 기록
+        failed_list = state.get("failed_queries", []) or []
+        current_sql = state.get("generated_sql", "")
+        failed_list = _append_failed_query(failed_list, current_sql)
+
+        failed_msg = f"SQL 실행 실패 ({error_type}): {sql_error}"
+        logger.warning(f"TEXT_TO_SQL:normalize_result {failed_msg}")
+
         return {
-            "result_status": "error",
-            "verdict": verdict,
-            "validation_reason": reason,
-            "feedback_to_sql": reason,
-            # failed_queries 누적은 9번 노드로 이관
-            "total_loops": state.get("total_loops", 0) + 1,
+            "sql_retry_count": retry_count,
+            "total_loops": total_loops,
+            "verdict": error_type, # 에러 타입으로 verdict 설정 (ROUTER에서 분기 처리)
+            "validation_reason": f"SQL Error: {sql_error}",
+            "failed_queries": failed_list,
+            "last_tool_usage": failed_msg
         }
 
-    # 2. 결과 데이터가 없는 경우
-    if not state.get("sql_result"):
-        logger.info("TEXT_TO_SQL:normalize_result empty_result")
-        return {
-            "result_status": "empty",
-            # 판정은 9번 노드(validate_llm)에서 수행
-        }
-
-    # 3. 결과 데이터가 있는 경우
-    logger.info("TEXT_TO_SQL:normalize_result success_result")
+    # 성공 시
     return {
-        "result_status": "ok",
-        "last_tool_usage": "조회 결과 정리 완료"
-        # 판정은 9번 노드(validate_llm)에서 수행
+        "verdict": "OK", # 일단 OK, validate_llm에서 최종 판정
     }
 
 
 # ─────────────────────────────────────────
 # Node 9: validate_llm
 # ─────────────────────────────────────────
+
 async def validate_llm(state: TextToSQLState) -> dict:
-    # [역할] 최종 정합성 판단 및 Verdict 확정 (Node 9)
-    # [입력] user_question, generated_sql, sql_result, result_status, verdict(from Node 8)
-    # [출력] verdict, feedback_to_sql, validation_reason, failed_queries
-    status = state.get("result_status")
+    """실행 결과의 논리적 정확성 검증 (LLM)."""
+    # 이미 에러 상태라면 PASS (이미 normalize에서 verdict 설정됨)
+    if state.get("sql_error"):
+        return {}
+
     current_sql = state.get("generated_sql", "")
-    failed_queries = list(state.get("failed_queries", []) or [])
-
-    # 0. 사전 검증: All Time 모드인데 시간 필터가 있으면 즉시 반려
-    time_range = state.get("parsed_request", {}).get("time_range", {})
-    if time_range.get("all_time"):
-        ts_start, ts_end = _extract_time_range_from_sql(current_sql)
-        if ts_start or ts_end:
-            failed_queries = _append_failed_query(failed_queries, current_sql)
-            feedback = "Time Mode가 'all_time'인데 SQL에 시간 조건(ts BETWEEN ...)이 포함되어 있습니다. 시간 조건을 제거하세요."
-            logger.info("TEXT_TO_SQL:validate_llm PRE-CHECK FAILED: %s", feedback)
-            return {
-                "verdict": "SQL_BAD",
-                "feedback_to_sql": feedback,
-                "validation_reason": "전체 조회 모드 위반 (시간 조건 포함됨)",
-                "failed_queries": failed_queries,
-                "validation_retry_count": state.get("validation_retry_count", 0) + 1,
-                "total_loops": state.get("total_loops", 0) + 1,
-                "last_tool_usage": f"⚠️ 사전 검증 반려: 전체 조회인데 시간 조건 있음"
-            }
-
-    # 0-1. 사전 검증: Inherit 모드인데 시간 필터가 누락되면 즉시 반려
-    if time_range.get("inherit"):
-        # 이전 쿼리 시간 추출
-        user_question = state.get("user_question", "")
-        previous_sql = ""
-        if "[Previous Query Context]" in user_question and "```sql" in user_question:
-            import re
-            sql_match = re.search(r'```sql\n(.*?)\n```', user_question, re.DOTALL)
-            if sql_match:
-                previous_sql = sql_match.group(1).strip()
-        
-        p_start, p_end = _extract_time_range_from_sql(previous_sql)
-        
-        # 이전 쿼리에 시간이 있었는데, 현재 쿼리에 없으면 반려
-        if p_start and p_end:
-            c_start, c_end = _extract_time_range_from_sql(current_sql)
-            if not c_start and not c_end:
-                failed_queries = _append_failed_query(failed_queries, current_sql)
-                feedback = (
-                    f"Time Mode가 'inherit'입니다. 이전 쿼리의 시간 조건(ts BETWEEN '{p_start}' AND '{p_end}')을 "
-                    "그대로 유지해야 합니다. 현재 SQL에 시간 조건이 없습니다."
-                )
-                logger.info("TEXT_TO_SQL:validate_llm PRE-CHECK FAILED (INHERIT): %s", feedback)
-                return {
-                    "verdict": "SQL_BAD",
-                    "feedback_to_sql": feedback,
-                    "validation_reason": "시간 상속 실패 (시간 조건 누락)",
-                    "failed_queries": failed_queries,
-                    "validation_retry_count": state.get("validation_retry_count", 0) + 1,
-                    "total_loops": state.get("total_loops", 0) + 1,
-                    "last_tool_usage": f"⚠️ 사전 검증 반려: 시간 상속 누락"
-                }
-            if c_start != p_start or c_end != p_end:
-                failed_queries = _append_failed_query(failed_queries, current_sql)
-                feedback = (
-                    f"Time Mode가 'inherit'입니다. 이전 쿼리의 시간 조건(ts BETWEEN '{p_start}' AND '{p_end}')을 "
-                    f"그대로 유지해야 합니다. 현재 SQL의 시간 조건은 '{c_start}' ~ '{c_end}'입니다."
-                )
-                logger.info("TEXT_TO_SQL:validate_llm PRE-CHECK FAILED (INHERIT MISMATCH): %s", feedback)
-                return {
-                    "verdict": "SQL_BAD",
-                    "feedback_to_sql": feedback,
-                    "validation_reason": "시간 상속 실패 (시간 조건 불일치)",
-                    "failed_queries": failed_queries,
-                    "validation_retry_count": state.get("validation_retry_count", 0) + 1,
-                    "total_loops": state.get("total_loops", 0) + 1,
-                    "last_tool_usage": f"⚠️ 사전 검증 반려: 시간 상속 불일치"
-                }
-
-    if status == "error":
-        verdict = state.get("verdict", "SQL_BAD")
-        logger.info("TEXT_TO_SQL:validate_llm skip (previous error status), verdict=%s", verdict)
-        if verdict == "SQL_BAD":
-            failed_queries = _append_failed_query(failed_queries, current_sql)
-        return {"failed_queries": failed_queries}
-
     messages = _build_validation_messages(state, current_sql)
+    
     response = await llm_smart.ainvoke(messages)
-    parsed_json, error = parse_json_from_llm(response.content)
+    parsed, error = parse_json_from_llm(response.content)
 
-    if error or not parsed_json:
-        logger.error("TEXT_TO_SQL:validate_llm parse_error=%s", error)
-        verdict = "OK" if state.get("sql_result") else "DATA_MISSING"
-        return {
-            "verdict": verdict,
-            "validation_reason": "검증 응답 파싱 실패",
-        }
+    if error or not parsed:
+        logger.warning("TEXT_TO_SQL:validate_llm JSON parse failed")
+        # 파싱 실패 -> 안전하게 OK 처리하거나 실패 처리
+        return {"verdict": "OK", "validation_reason": "검증 응답 파싱 실패, 결과 수용"}
 
-    verdict = parsed_json.get("verdict", "AMBIGUOUS")
-    feedback = parsed_json.get("feedback_to_sql", "")
-    hint = parsed_json.get("correction_hint", "")
-    unnecessary = parsed_json.get("unnecessary_tables", []) or []
+    verdict = parsed.get("verdict", "OK")
+    reason = parsed.get("reason", "")
+    hint = parsed.get("hint", "")
+    unnecessary_tables = parsed.get("unnecessary_tables", [])
 
-    if verdict == "SQL_BAD":
-        failed_queries = _append_failed_query(failed_queries, current_sql)
-
-    unnecessary_result = _handle_unnecessary_tables(state, unnecessary, failed_queries)
-    if unnecessary_result:
-        return unnecessary_result
-
-    # C. TABLE_MISSING 처리 (내부 툴 호출로 테이블 확장)
-    if verdict == "TABLE_MISSING":
-        # 이미 이전에 확장 실패했다면 바로 데이터 없음 처리
-        if state.get("table_expand_failed"):
-            logger.info("TEXT_TO_SQL:validate_llm TABLE_MISSING but already failed to expand previously.")
-            verdict = "DATA_MISSING"
-            return {
-                "verdict": verdict,
-                "validation_reason": "추가 테이블을 찾을 수 없습니다 (확장 실패)",
-                "failed_queries": failed_queries,
-            }
-        candidates = state.get("table_candidates", []) or []
-        current_offset = state.get("candidate_offset", TOP_K)
-        selected = list(state.get("selected_tables", []) or [])
-        
-        # 툴 호출
-        new_selected, new_context, new_offset = expand_tables_tool(
-            selected, candidates, current_offset
-        )
-        
-        # 확장 성공 여부 확인 (Offset이 안 늘어났거나, 테이블이 안 늘어났거나)
-        if new_offset <= current_offset:
-            # 더 이상 확장할 게 없으면 실패 처리
-            logger.info("TEXT_TO_SQL:validate_llm TABLE_MISSING but no more tables to expand")
-            verdict = "DATA_MISSING"  # 확장 불가 -> 데이터 없음으로 종결
-            return {
-                "verdict": verdict,
-                "validation_reason": "추가 후보 테이블이 없습니다",
-                "failed_queries": failed_queries,
-            }
-        else:
-            # 확장 성공 -> 재시도 (Node 5로 이동 유도)
-            tool_msg = f"정보 부족으로 테이블 확장: {', '.join(new_selected)}"
-            logger.info("TEXT_TO_SQL:validate_llm expanded tables: %s", new_selected)
-            return {
-                "selected_tables": new_selected,
-                "table_context": new_context,
-                "candidate_offset": new_offset,
-                "verdict": "RETRY_SQL", # 그래프에서 generate_sql로 라우팅
-                "validation_reason": "테이블 정보 부족으로 컨텍스트 확장",
-                "failed_queries": failed_queries,
-                "table_expand_count": state.get("table_expand_count", 0) + 1,
-                "total_loops": state.get("total_loops", 0) + 1,
-                "last_tool_usage": tool_msg
-            }
-
+    # 재시도 카운트 관리
     if verdict != "OK":
-        full_feedback = _format_failed_feedback(feedback, hint)
-        logger.info("TEXT_TO_SQL:validate_llm failed, verdict=%s", verdict)
-        return {
+        state_update = {
             "verdict": verdict,
-            "feedback_to_sql": full_feedback,
-            "validation_reason": feedback,
-            "failed_queries": failed_queries,
-            "validation_retry_count": state.get("validation_retry_count", 0) + 1,
+            "validation_reason": _format_failed_feedback(reason, hint),
+            "sql_retry_count": state.get("sql_retry_count", 0) + 1,
             "total_loops": state.get("total_loops", 0) + 1,
-            "last_tool_usage": f"⚠️ 검증 반려: {feedback}"
         }
+        
+        # 불필요 테이블 처리 (재시도 플래그와 함께 리턴)
+        table_retry = _handle_unnecessary_tables(state, unnecessary_tables, state.get("failed_queries", []))
+        if table_retry:
+            return table_retry
+            
+        # 실패 쿼리 기록
+        failed = state.get("failed_queries", []) or []
+        state_update["failed_queries"] = _append_failed_query(failed, current_sql)
+        
+        return state_update
 
-    logger.info("TEXT_TO_SQL:validate_llm OK")
     return {
         "verdict": "OK",
-        "validation_reason": "",
-        "feedback_to_sql": "",
-        "failed_queries": failed_queries,
+        "validation_reason": reason
     }
-
-
 
 
 # ─────────────────────────────────────────
@@ -1089,36 +838,28 @@ async def validate_llm(state: TextToSQLState) -> dict:
 # ─────────────────────────────────────────
 
 async def generate_report(state: TextToSQLState) -> dict:
-    # [역할] 최종 사용자 보고서 생성
-    # [입력] user_question, result_status, sql_result, validation_reason
-    # [출력] report, suggested_actions
+    """최종 응답 보고서 생성 (자연어 답변)."""
+    logger.info("TEXT_TO_SQL:generate_report start")
+    
     messages = [
         SystemMessage(content=GENERATE_REPORT_SYSTEM),
         HumanMessage(content=GENERATE_REPORT_USER.format(
-            user_question=state.get("user_question", ""),
-            result_status=state.get("result_status", "unknown"),
-            user_constraints=state.get("user_constraints", "") or "",
-            generated_sql=state.get("generated_sql", ""),
-            sql_result=json.dumps(state.get("sql_result", [])[:20], ensure_ascii=False, indent=2),
-            validation_reason=state.get("validation_reason", ""),
-        )),
+            user_question=state["user_question"],
+            generated_sql=state.get("generated_sql", "생성 실패"),
+            sql_result=json.dumps(state.get("sql_result", []), ensure_ascii=False),
+            final_error=state.get("sql_error") or state.get("request_error") or "없음"
+        ))
     ]
+
     response = await llm_fast.ainvoke(messages)
-    report = response.content.strip()
-
-    # 테이블 확장 실패 시 경고 문구 추가
-    if state.get("table_expand_failed"):
-        warning_msg = "\n\n> ⚠️ **주의**: 분석에 필요한 테이블이 일부 누락되었을 수 있어, 결과가 제한적일 수 있습니다."
-        report += warning_msg
-
-    suggested_actions = []
-    for line in report.splitlines():
-        if re.match(r"^\d+\.\s", line.strip()):
-            suggested_actions.append(line.strip())
+    
+    status = "success"
+    if state.get("sql_error") or state.get("request_error"):
+        status = "error"
+    elif state.get("verdict") != "OK":
+        status = "fail"
 
     return {
-        "report": report,
-        "suggested_actions": suggested_actions,
-        "sql_result": state.get("sql_result", []),
-        "generated_sql": state.get("generated_sql", ""),
+        "final_answer": response.content,
+        "result_status": status
     }

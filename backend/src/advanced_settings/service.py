@@ -1,4 +1,4 @@
-"""고급 설정 서비스 계층."""
+"""고급 설정 서비스 계층 모듈."""
 
 import logging
 import httpx
@@ -10,13 +10,16 @@ from .templates import TRIGGER_FUNC_TEMPLATE, TRIGGER_CREATE_TEMPLATE, TRIGGER_D
 logger = logging.getLogger("ALERT_SERVICE")
 
 class AlertService:
+    """알림 규칙 관리 및 트리거 제어 서비스 로직."""
+
     @classmethod
     async def get_pool(cls):
+        """DB 커넥션 풀 획득."""
         return await db_manager.get_pool()
 
     @staticmethod
     async def _execute_mcp_advanced(sql: str):
-        """MCP 서버의 execute_sql 툴 호출 (Bypass 옵션 사용)"""
+        """MCP 서버를 통한 동적 SQL 실행 (유효성 검사 우회)."""
         url = f"{settings.mcp_postgres_url}/call"
         async with httpx.AsyncClient() as client:
             try:
@@ -24,18 +27,18 @@ class AlertService:
                     "name": "execute_sql",
                     "arguments": {
                         "query": sql,
-                        "bypass_validation": True  # 핵심: 보안 우회 플래그
+                        "bypass_validation": True  # 보안 검사 우회
                     }
                 })
                 resp.raise_for_status()
                 return resp.json()
             except Exception as e:
-                logger.error(f"MCP Call Failed: {e}")
+                logger.error(f"MCP 호출 실패: {e}")
                 raise
 
     @classmethod
     async def create_rule(cls, rule: AlertRuleCreate):
-        """규칙 등록 -> DB 저장 -> MCP로 트리거 생성"""
+        """규칙 메타 저장 및 DB 트리거 생성."""
         pool = await cls.get_pool()
         async with pool.acquire() as conn:
             # 1. 메타 데이터 저장
@@ -69,7 +72,7 @@ class AlertService:
 
     @classmethod
     async def delete_rule(cls, rule_id: int):
-        """규칙 삭제 -> DB 삭제 -> MCP로 트리거 제거"""
+        """규칙 메타 삭제 및 DB 트리거 제거."""
         pool = await cls.get_pool()
         async with pool.acquire() as conn:
             # 1. 정보 조회
@@ -92,6 +95,7 @@ class AlertService:
 
     @classmethod
     async def list_rules(cls):
+        """등록된 감시 규칙 목록 조회."""
         pool = await cls.get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM monitor.alert_rules ORDER BY created_at DESC")
@@ -99,6 +103,7 @@ class AlertService:
 
     @classmethod
     async def list_alerts(cls):
+        """발생한 알림 이력 조회 (최근 100건)."""
         pool = await cls.get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM monitor.alert_history ORDER BY created_at DESC LIMIT 100")
@@ -106,6 +111,7 @@ class AlertService:
 
     @classmethod
     async def delete_alert(cls, alert_id: int):
+        """특정 알림 이력 삭제."""
         pool = await cls.get_pool()
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM monitor.alert_history WHERE id = $1", alert_id)

@@ -2,14 +2,14 @@
 
 import logging
 from typing import List, Dict, Optional, Tuple
+import json
 
 from src.db.db_manager import db_manager
 
 logger = logging.getLogger("uvicorn.error")
 
-
 async def get_recent_messages(session_id: str, limit: int = 4) -> List[Dict[str, str]]:
-    """최근 N개의 메시지를 시간순으로 반환 (payload_json 포함)."""
+    """최근 N개의 메시지 조회 (JSON 페이로드 포함)."""
     pool = await db_manager.get_pool()
     async with pool.acquire() as conn:
         db_manager._log_pool_usage(pool, "acquire")
@@ -24,7 +24,6 @@ async def get_recent_messages(session_id: str, limit: int = 4) -> List[Dict[str,
             session_id,
             limit,
         )
-    import json
     return [
         {
             "role": r["role"],
@@ -44,7 +43,7 @@ async def get_recent_messages(session_id: str, limit: int = 4) -> List[Dict[str,
 async def get_messages_before_recent(
     session_id: str, recent_limit: int = 2
 ) -> List[Dict[str, str]]:
-    """최근 N개를 제외한 나머지 메시지를 시간순으로 반환."""
+    """최근 N개를 제외한 이전 메시지 조회 (오름차순)."""
     pool = await db_manager.get_pool()
     async with pool.acquire() as conn:
         db_manager._log_pool_usage(pool, "acquire")
@@ -70,7 +69,7 @@ async def get_messages_before_recent(
 
 
 async def get_summary(session_id: str) -> Optional[str]:
-    """세션 요약 조회."""
+    """세션 요약 정보 조회."""
     pool = await db_manager.get_pool()
     async with pool.acquire() as conn:
         db_manager._log_pool_usage(pool, "acquire")
@@ -83,7 +82,7 @@ async def get_summary(session_id: str) -> Optional[str]:
 async def get_summary_state(
     session_id: str,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """세션 요약과 커서(마지막 요약 메시지)를 함께 조회."""
+    """세션 요약 상태(내용, 커서, 시각) 조회."""
     pool = await db_manager.get_pool()
     async with pool.acquire() as conn:
         db_manager._log_pool_usage(pool, "acquire")
@@ -115,7 +114,7 @@ async def get_messages_to_summarize(
     after_created_at: Optional[str] = None,
     limit: int = 30,
 ) -> List[Dict[str, str]]:
-    """요약 대상 메시지(최근 N개 제외, 커서 이후)를 시간순으로 반환."""
+    """요약 대상 메시지 조회 (최근 N개 제외, 기준 시점 이후)."""
     pool = await db_manager.get_pool()
     async with pool.acquire() as conn:
         db_manager._log_pool_usage(pool, "acquire")
@@ -163,7 +162,7 @@ async def update_summary(
     last_message_id: Optional[str] = None,
     last_created_at: Optional[str] = None,
 ) -> None:
-    """세션 요약 갱신 (커서 포함)."""
+    """세션 요약 내용 및 커서 정보 갱신."""
     pool = await db_manager.get_pool()
     async with pool.acquire() as conn:
         db_manager._log_pool_usage(pool, "acquire")

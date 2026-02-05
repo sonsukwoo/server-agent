@@ -1,47 +1,44 @@
-"""MCP 클라이언트 - subprocess(stdio) 또는 HTTP로 통신"""
+"""MCP 클라이언트 연결 (HTTP/Stdio) 및 도구 실행 래퍼."""
+
 import os
-from pathlib import Path
-from dotenv import load_dotenv
-
-# .env 로드 (모듈 최상단에서 실행)
-load_dotenv()
-
-import asyncio
-import json
 import httpx
+from pathlib import Path
+from types import SimpleNamespace
+from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-
 from config.settings import settings
 
-# MCP 서버 경로 (settings 이용)
+load_dotenv()
+
 MCP_SERVERS_DIR = Path(settings.mcp_servers_dir)
 
-
 class MCPHttpWrapper:
-    """HTTP 기반 MCP 클라이언트 래퍼"""
+    """HTTP 전송을 사용하는 MCP 클라이언트 래퍼."""
+    
     def __init__(self, base_url: str):
+        """기본 URL 및 비동기 HTTP 클라이언트 설정."""
         self.base_url = base_url.rstrip("/")
         self.client = httpx.AsyncClient(timeout=300.0)
 
     async def __aenter__(self):
+        """컨텍스트 진입 시 자신 반환."""
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """컨텍스트 종료 시 HTTP 클라이언트 닫기."""
         await self.client.aclose()
 
     async def list_tools(self) -> list:
+        """가용 도구 목록 조회 및 객체 매핑."""
         resp = await self.client.get(f"{self.base_url}/tools")
         resp.raise_for_status()
-        # MCP Tool 객체 구조(duck typing)로 반환
         tools_data = resp.json()
-        # 간단히 속성 접근 가능하도록 SimpleNamespace 또는 딕셔너리 래퍼 사용
-        # 기존 코드 호환성을 위해 속성 접근이 가능한 객체 리스트로 변환
-        from types import SimpleNamespace
         return [SimpleNamespace(**t) for t in tools_data]
 
     async def call_tool(self, name: str, arguments: dict = None) -> str:
+        """도구 실행 및 결과 반환."""
         if arguments is None:
             arguments = {}
         payload = {"name": name, "arguments": arguments}
@@ -54,18 +51,19 @@ class MCPHttpWrapper:
 
 
 class MCPClientWrapper:
-    """Stdio 기반 MCP 세션 래퍼"""
+    """Stdio 전송을 사용하는 MCP 클라이언트 래퍼."""
     
     def __init__(self, session: ClientSession):
+        """MCP 세션 객체 저장."""
         self.session = session
     
     async def list_tools(self) -> list:
-        """사용 가능한 Tool 목록 조회"""
+        """가용 도구 목록 조회."""
         result = await self.session.list_tools()
         return result.tools
     
     async def call_tool(self, name: str, arguments: dict = None) -> str:
-        """Tool 호출"""
+        """도구 실행 및 결과 텍스트 반환."""
         if arguments is None:
             arguments = {}
         
@@ -78,11 +76,9 @@ class MCPClientWrapper:
 
 @asynccontextmanager
 async def create_mcp_client(server_name: str):
-    """
-    MCP 서버에 연결하는 컨텍스트 매니저 (Transport 분기 처리)
-    """
+    """전송 방식(HTTP/Stdio)에 따른 MCP 클라이언트 생성 및 반환."""
     
-    # 1. HTTP Transport
+    # 1. HTTP 전송 방식
     if settings.mcp_transport == "http":
         url_map = {
             "postgres": settings.mcp_postgres_url,
@@ -92,16 +88,14 @@ async def create_mcp_client(server_name: str):
         }
         base_url = url_map.get(server_name)
         if not base_url:
-            raise ValueError(f"Unknown MCP server name for HTTP: {server_name}")
+            raise ValueError(f"HTTP용 알 수 없는 MCP 서버: {server_name}")
             
         async with MCPHttpWrapper(base_url) as client:
             yield client
             
-    # 2. Stdio Transport (기존)
+    # 2. Stdio 전송 방식
     else:
         server_path = MCP_SERVERS_DIR / server_name / "server.py"
-        
-        # 환경변수를 서버 프로세스에 전달
         env = dict(os.environ)
         
         server_params = StdioServerParameters(
@@ -116,25 +110,22 @@ async def create_mcp_client(server_name: str):
                 yield MCPClientWrapper(session)
 
 
-# 편의 함수
 @asynccontextmanager
 async def postgres_client():
-    """PostgreSQL MCP 클라이언트"""
+    """PostgreSQL MCP 연결 컨텍스트."""
     async with create_mcp_client("postgres") as client:
         yield client
 
 
-
-
 @asynccontextmanager
 async def qdrant_search_client():
-    """Qdrant 검색 (Search) MCP 클라이언트"""
+    """Qdrant 검색 MCP 연결 컨텍스트."""
     async with create_mcp_client("qdrant") as client:
         yield client
 
 
 @asynccontextmanager
 async def qdrant_embeddings_client():
-    """Qdrant 임베딩 (Embeddings) MCP 클라이언트"""
+    """Qdrant 임베딩 MCP 연결 컨텍스트."""
     async with create_mcp_client("qdrant") as client:
         yield client

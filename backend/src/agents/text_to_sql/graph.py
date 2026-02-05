@@ -1,4 +1,5 @@
-"""Text-to-SQL 에이전트 LangGraph 워크플로우 (재구축)"""
+"""Text-to-SQL 에이전트 LangGraph 워크플로우 정의."""
+
 from langgraph.graph import StateGraph, END
 
 from .state import TextToSQLState
@@ -22,14 +23,17 @@ from .common.constants import (
 
 
 def check_request_valid(state: TextToSQLState) -> str:
+    """요청 유효성 검사 결과 분기 (valid / invalid)."""
     return "valid" if state.get("is_request_valid", False) else "invalid"
 
 
 def has_table_context(state: TextToSQLState) -> str:
+    """테이블 컨텍스트 존재 여부 분기 (valid / invalid)."""
     return "valid" if state.get("table_context") else "invalid"
 
 
 def guard_sql_route(state: TextToSQLState) -> str:
+    """SQL 가드 결과에 따른 분기 (ok / retry / fail)."""
     if not state.get("sql_guard_error"):
         return "ok"
     if state.get("sql_guard_error") == "CLARIFICATION_NEEDED":
@@ -40,12 +44,14 @@ def guard_sql_route(state: TextToSQLState) -> str:
 
 
 def normalize_route(state: TextToSQLState) -> str:
+    """실행 결과 정규화 성공 여부 분기 (ok / error)."""
     if state.get("sql_error"):
         return "error"
     return "ok"
 
 
 def verdict_route(state: TextToSQLState) -> str:
+    """최종 검증 결과에 따른 라우팅 로직."""
     verdict = state.get("verdict", "OK")
     total_loops = state.get("total_loops", 0)
 
@@ -61,7 +67,7 @@ def verdict_route(state: TextToSQLState) -> str:
         return "fail"
 
     if verdict == "RETRY_SQL":
-        if state.get("table_expand_count", 0) <= MAX_TABLE_EXPAND: # count is incremented in node
+        if state.get("table_expand_count", 0) <= MAX_TABLE_EXPAND:
              return "retry_sql"
         return "fail"
 
@@ -72,9 +78,10 @@ def verdict_route(state: TextToSQLState) -> str:
 
 
 def build_text_to_sql_graph() -> StateGraph:
+    """LangGraph 상태 머신 및 워크플로우 구성."""
     workflow = StateGraph(TextToSQLState)
 
-    # 노드 등록 (각 단계별 역할)
+    # 노드 등록
     workflow.add_node("parse_request", parse_request)
     workflow.add_node("validate_request", validate_request)
     workflow.add_node("retrieve_tables", retrieve_tables)
@@ -86,13 +93,13 @@ def build_text_to_sql_graph() -> StateGraph:
     workflow.add_node("validate_llm", validate_llm)
     workflow.add_node("generate_report", generate_report)
 
-    # 엔트리 포인트
+    # 시작점 설정
     workflow.set_entry_point("parse_request")
 
-    # 기본 흐름: 파싱 → 검증 → 검색 → 선택 → 생성 → 가드 → 실행 → 정규화 → 검증 → 보고서
+    # 기본 흐름 연결
     workflow.add_edge("parse_request", "validate_request")
 
-    # 요청 검증 실패 시 즉시 보고서 노드로 종료
+    # 요청 검증 분기
     workflow.add_conditional_edges(
         "validate_request",
         check_request_valid,
@@ -101,7 +108,7 @@ def build_text_to_sql_graph() -> StateGraph:
 
     workflow.add_edge("retrieve_tables", "select_tables")
 
-    # 테이블 컨텍스트가 없으면 보고서로 종료
+    # 테이블 선택 결과 분기
     workflow.add_conditional_edges(
         "select_tables",
         has_table_context,
@@ -110,7 +117,7 @@ def build_text_to_sql_graph() -> StateGraph:
 
     workflow.add_edge("generate_sql", "guard_sql")
 
-    # SQL 가드 실패 시 재생성 루프 또는 종료
+    # SQL 가드 통과 여부 분기
     workflow.add_conditional_edges(
         "guard_sql",
         guard_sql_route,
@@ -119,13 +126,14 @@ def build_text_to_sql_graph() -> StateGraph:
 
     workflow.add_edge("execute_sql", "normalize_result")
 
+    # 실행 결과 정규화 분기
     workflow.add_conditional_edges(
         "normalize_result",
         normalize_route,
         {"ok": "validate_llm", "error": "validate_llm"},
     )
 
-    # 실행 결과를 검증하고 결과에 따라 분기
+    # 최종 검증 및 재시도 분기
     workflow.add_conditional_edges(
         "validate_llm",
         verdict_route,
@@ -145,6 +153,7 @@ app = graph.compile()
 
 
 async def run_text_to_sql(question: str) -> dict:
+    """Text-to-SQL 워크플로우 실행 및 초기 상태 설정."""
     initial_state = {
         "user_question": question,
         "sql_retry_count": 0,

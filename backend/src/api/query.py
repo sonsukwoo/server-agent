@@ -1,9 +1,7 @@
-"""
-/query 엔드포인트 및 SSE 스트리밍 처리
-"""
+"""질의 처리 및 스트리밍 응답 API."""
 import json
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -11,7 +9,6 @@ import asyncio
 
 from src.agents.text_to_sql import app as sql_app
 from src.agents.text_to_sql.middleware.input_guard import InputGuard
-from config.settings import settings
 from src.agents.text_to_sql.chat_context import (
     get_chat_context,
     run_background_summarization,
@@ -22,9 +19,9 @@ logger = logging.getLogger("API_QUERY")
 router = APIRouter(tags=["query"])
 
 class QueryRequest(BaseModel):
-    agent: str  # "sql" 또는 "ubuntu"
+    agent: str  # "sql" 등
     question: str
-    session_id: Optional[str] = None # 세션 컨텍스트 식별자
+    session_id: Optional[str] = None # 세션 ID
 
 class QueryResponse(BaseModel):
     ok: bool
@@ -34,7 +31,7 @@ class QueryResponse(BaseModel):
 
 @router.post("/query")
 async def query(body: QueryRequest, background_tasks: BackgroundTasks):
-    """자연어 질문을 받아서 처리 (스트리밍 지원)"""
+    """자연어 질문 처리 API (SSE 스트리밍)."""
     agent_type = body.agent.lower().strip()
     question = body.question.strip()
     session_id = body.session_id
@@ -47,7 +44,7 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
     if not is_valid:
         raise HTTPException(status_code=400, detail=error)
 
-    # 사용자 질문에 컨텍스트 결합 (Agent에게는 하나의 긴 질문처럼 보임)
+    # 컨텍스트 로드 및 질문 결합
     base_full_question = question
     context_prefix = ""
     if session_id:
@@ -58,7 +55,7 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
         except Exception:
             logger.exception("Failed to load chat context; proceeding without it.")
 
-    # 노드 이름과 상태 메시지 매핑
+    # 프론트엔드 상태 표시용 매핑
     node_messages = {
         "parse_request": "사용자 질문 분석 중",
         "validate_request": "질문 유효성 검증 중",
@@ -75,8 +72,6 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
 
     async def event_generator():
         if agent_type == "sql":
-            # 라우팅: SQL 실행 vs 설명형 응답
-            # 라우팅 로직 제거됨 -> 무조건 SQL 에이전트 실행
             full_question = base_full_question
             user_constraints = ""
 
@@ -98,32 +93,30 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
             last_reason = ""
             current_retry = 0
             try:
-                # LangGraph astream 호출
+                # LangGraph 실행 및 스트리밍
                 async for event in sql_app.astream(initial_state):
-                    # [Optimization] 단일 프로세스 환경에서 다른 요청이 처리될 수 있도록 제어권 양보
+                    # 이벤트 루프 양보 (단일 프로세스 효율성)
                     await asyncio.sleep(0)
                     
                     for node_name, output in event.items():
-                        # 상태 업데이트 추적
+                        # 상태 정보 업데이트
                         if "validation_reason" in output:
                             last_reason = output["validation_reason"]
                         
-                        # 재시도 횟수 업데이트
                         if "sql_retry_count" in output:
                             current_retry = output.get("sql_retry_count", 0)
                         elif "validation_retry_count" in output:
                             current_retry = output.get("validation_retry_count", 0)
                         
-                        # 특정 노드가 시작되거나 완료될 때 상태 메시지 전송
+                        # 상태 메시지 결정
                         status_msg = node_messages.get(node_name)
                         
-                        # 툴 사용 또는 상세 로그가 있으면 우선 표시
+                        # Tool 사용 로그 우선
                         tool_usage = output.get("last_tool_usage")
                         if tool_usage:
-                            # 툴 사용 정보가 있으면 상태 메시지보다 우선하거나 병합하여 전송
                             yield f"data: {json.dumps({'type': 'status', 'message': tool_usage, 'node': node_name}, ensure_ascii=False)}\n\n"
                         elif status_msg:
-                            # 특수 케이스: generate_sql에서 재시도 중인 경우 상세 사유 포함
+                            # 재시도 중일 때 상세 메시지
                             if node_name == "generate_sql" and current_retry > 0:
                                 if last_reason:
                                     status_msg = f"피드백 반영하여 SQL 재작성 중 (사유: {last_reason})"
@@ -132,7 +125,7 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
                             
                             yield f"data: {json.dumps({'type': 'status', 'message': status_msg, 'node': node_name}, ensure_ascii=False)}\n\n"
                         
-                        # 마지막 결과인 경우 전체 데이터 전송
+                        # 최종 결과 전송
                         if node_name == "generate_report":
                             final_data = {
                                 "ok": True,
@@ -145,7 +138,7 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
                             }
                             yield f"data: {json.dumps({'type': 'result', 'payload': final_data}, ensure_ascii=False)}\n\n"
                 
-                # [Background] 응답 완료 후 요약 작업 예약
+                # 백그라운드 요약 작업 예약
                 if session_id:
                     background_tasks.add_task(run_background_summarization, session_id)
 

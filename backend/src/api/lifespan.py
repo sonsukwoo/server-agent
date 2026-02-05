@@ -1,6 +1,4 @@
-"""
-FastAPI Lifespan (Startup/Shutdown) 로직
-"""
+"""FastAPI 앱 수명주기(Lifespan) 관리."""
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -13,16 +11,16 @@ logger = logging.getLogger("LIFESPAN")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """앱 시작/종료 수명주기 핸들러"""
+    """앱 시작/종료 시 실행될 초기화 및 정리 로직."""
     alert_listener = None
     
-    # 1. 채팅 기록 스키마 초기화 (항상 수행)
+    # 1. 채팅 기록 스키마 초기화
     try:
         await db_manager.ensure_schema()
     except Exception as e:
         logger.error("CHAT_STORE: ensure schema failed: %s", e)
 
-    # 2. 스키마 동기화 및 리스너 (설정에 따라 수행)
+    # 2. 스키마 동기화 및 리스너 (설정 시)
     if settings.enable_schema_sync:
         logging.getLogger("uvicorn.error").info(
             "LIFESPAN: enable_schema_sync=%s", settings.enable_schema_sync
@@ -30,14 +28,12 @@ async def lifespan(app: FastAPI):
         try:
             # 초기 동기화 (1회)
             await run_once()
-
             # 리스너 시작
             await start_listener()
-
         except Exception as e:
             logger.error("LIFESPAN: Schema sync/listener setup failed: %s", e)
             
-    # 3. [알림 시스템] 리스너 시작 (설정 파일 없이 강제 시작)
+    # 3. 알림 리스너 시작
     try:
         alert_listener = AlertListener()
         await alert_listener.start()
@@ -48,7 +44,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # 4. 종료 처리
-    # 스키마 리스너 종료 (오케스트레이터 위임)
+    # 스키마 리스너 종료
     if settings.enable_schema_sync:
         try:
             await stop_listener()

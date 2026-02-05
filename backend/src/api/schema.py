@@ -1,8 +1,6 @@
-"""고급 설정 스키마 테이블/컬럼 드롭 다운 목록 API."""
+"""스키마 테이블/컬럼 목록 조회 API."""
 import logging
-
 from fastapi import APIRouter
-
 from config.settings import settings
 from src.db.db_manager import db_manager
 
@@ -12,7 +10,7 @@ logger = logging.getLogger("API_SCHEMA")
 
 @router.get("/schema/tables")
 async def list_schema_tables():
-    """사용 가능한 테이블/컬럼 목록 반환"""
+    """사용 가능한 테이블 및 컬럼 목록 조회 (설정된 제외 네임스페이스 반영)."""
     excluded_schemas = tuple(
         s.strip() for s in settings.schema_exclude_namespaces.split(",") if s.strip()
     )

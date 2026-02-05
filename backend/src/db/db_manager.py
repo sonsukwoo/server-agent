@@ -1,4 +1,4 @@
-"""DB 연결 풀 관리 및 채팅/모니터링 데이터 접근."""
+"""DB 연결 풀 관리 및 데이터 접근 로직."""
 
 import logging
 import json
@@ -9,12 +9,15 @@ from config.settings import settings
 logger = logging.getLogger("uvicorn.error")
 
 class DBManager:
+    """PostgreSQL 연결 풀 및 비즈니스 데이터 접근 클래스."""
+
     def __init__(self):
-        # reuse connection string from settings (same as other parts)
+        """DSN 설정 및 풀 변수 초기화."""
         self.dsn = f"postgresql://{settings.db_user}:{settings.db_password}@{settings.db_host}:{settings.db_port}/{settings.db_name}"
         self._pool = None
 
     async def get_pool(self):
+        """비동기 DB 연결 풀 생성 및 반환 (지연 초기화)."""
         if self._pool is None:
             self._pool = await asyncpg.create_pool(
                 self.dsn, 
@@ -29,7 +32,7 @@ class DBManager:
         return self._pool
 
     def _log_pool_usage(self, pool, tag: str = "usage") -> None:
-        """Best-effort pool usage logging (used/total)."""
+        """연결 풀 사용량 로깅 (디버깅용)."""
         try:
             holders = getattr(pool, "_holders", None)
             if holders is not None:
@@ -45,18 +48,19 @@ class DBManager:
             pass
 
     async def ensure_schema(self):
-        """서버 시작 시 스키마 및 테이블 생성"""
+        """서버 시작 시 필수 스키마 및 테이블 생성."""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
             self._log_pool_usage(pool, "acquire")
             try:
                 async with conn.transaction():
-                    # pgcrypto for gen_random_uuid()
+                    # UUID 생성을 위한 확장 기능
                     await conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-                    # 1. Schema
+                    
+                    # 1. 스키마 생성
                     await conn.execute("CREATE SCHEMA IF NOT EXISTS chat;")
 
-                    # 2. Sessions Table
+                    # 2. 세션 테이블 (채팅방)
                     await conn.execute("""
                         CREATE TABLE IF NOT EXISTS chat.sessions (
                             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -70,17 +74,16 @@ class DBManager:
                         );
                     """)
 
-                    # [Migration] develop 단계에서 기존 테이블이 있다면 컬럼 추가 (안전장치)
-                    # 실제 운영 환경에서는 별도 마이그레이션 스크립트 권장
+                    # 마이그레이션 (개발 단계 편의용)
                     try:
                         await conn.execute("ALTER TABLE chat.sessions ADD COLUMN IF NOT EXISTS summary TEXT;")
                         await conn.execute("ALTER TABLE chat.sessions ADD COLUMN IF NOT EXISTS summary_updated_at TIMESTAMPTZ;")
                         await conn.execute("ALTER TABLE chat.sessions ADD COLUMN IF NOT EXISTS summary_last_message_id UUID;")
                         await conn.execute("ALTER TABLE chat.sessions ADD COLUMN IF NOT EXISTS summary_last_created_at TIMESTAMPTZ;")
                     except Exception:
-                        pass # 이미 존재하거나 오류 시 무시 (ensure_schema의 멱등성 유지)
+                        pass
 
-                    # 3. Messages Table
+                    # 3. 메시지 테이블
                     await conn.execute("""
                         CREATE TABLE IF NOT EXISTS chat.messages (
                             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -92,42 +95,36 @@ class DBManager:
                         );
                     """)
 
-                    # 4. Indexes
+                    # 4. 인덱스 생성
                     await conn.execute("""
                         CREATE INDEX IF NOT EXISTS idx_messages_session_id ON chat.messages(session_id);
                         CREATE INDEX IF NOT EXISTS idx_messages_created_at ON chat.messages(created_at);
                         CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON chat.sessions(updated_at DESC);
                     """)
                     
-                    # -----------------------------------------------------------------
-                    # 5. [알림 시스템] 모니터링 스키마 및 관리 테이블 (레고 블럭)
-                    # -----------------------------------------------------------------
-                    
-                    # 5-1. 모니터 스키마 생성
+                    # 5. [모니터링] 고급 설정 알림 시스템 스키마
                     await conn.execute("CREATE SCHEMA IF NOT EXISTS monitor;")
                     
-                    # 5-2. 알림 규칙(Lego Blocks) 저장 테이블
-                    # 사용자가 설정한 테이블명, 컬럼명, 제한값 등을 저장
+                    # 5-1. 알림 규칙 테이블
                     await conn.execute("""
                         CREATE TABLE IF NOT EXISTS monitor.alert_rules (
                             id SERIAL PRIMARY KEY,
-                            target_table TEXT NOT NULL,  -- 감시 대상 테이블 (예: ops_metrics.metrics_cpu)
-                            target_column TEXT NOT NULL, -- 감시 대상 컬럼 (예: cpu_percent)
-                            operator TEXT NOT NULL,      -- 연산자 (>, <, >= 등)
-                            threshold FLOAT NOT NULL,    -- 임계값 (상한선)
-                            message_template TEXT,       -- 알림 메시지 템플릿
+                            target_table TEXT NOT NULL,
+                            target_column TEXT NOT NULL,
+                            operator TEXT NOT NULL,
+                            threshold FLOAT NOT NULL,
+                            message_template TEXT,
                             created_at TIMESTAMPTZ DEFAULT now()
                         );
                     """)
                     
-                    # 5-3. 알림 발생 이력(History) 테이블
-                    # 프론트에서 이슈 알림을 확인하고 삭제할 수 있는 저장소
+                    # 5-2. 알림 발생 이력 테이블
                     await conn.execute("""
                         CREATE TABLE IF NOT EXISTS monitor.alert_history (
                             id SERIAL PRIMARY KEY,
                             rule_id INTEGER REFERENCES monitor.alert_rules(id) ON DELETE SET NULL,
-                            message TEXT NOT NULL,       -- 발생 당시 메시지
-                            value FLOAT NOT NULL,        -- 발생 당시 값
+                            message TEXT NOT NULL,
+                            value FLOAT NOT NULL,
                             created_at TIMESTAMPTZ DEFAULT now()
                         );
                     """)
@@ -138,7 +135,7 @@ class DBManager:
                 raise
 
     async def list_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """세션 목록 조회 (최신순)"""
+        """세션 목록 조회 (최신 업데이트순)."""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
             self._log_pool_usage(pool, "acquire")
@@ -159,7 +156,7 @@ class DBManager:
             ]
 
     async def create_session(self, title: str = "New Chat") -> Dict[str, Any]:
-        """새 세션 생성"""
+        """새 채팅 세션 생성."""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
             self._log_pool_usage(pool, "acquire")
@@ -176,16 +173,16 @@ class DBManager:
             }
 
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """세션 상세 조회 (메시지 포함)"""
+        """세션 상세 정보 및 전체 메시지 조회."""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
             self._log_pool_usage(pool, "acquire")
-            # 세션 존재 확인
+            # 세션 정보 조회
             session_row = await conn.fetchrow("SELECT * FROM chat.sessions WHERE id = $1", session_id)
             if not session_row:
                 return None
             
-            # 메시지 조회
+            # 메시지 목록 조회
             messages = await conn.fetch("""
                 SELECT id, role, content, payload_json, created_at
                 FROM chat.messages
@@ -216,12 +213,12 @@ class DBManager:
             return session_data
     
     async def save_message(self, session_id: str, role: str, content: str, payload: Optional[Dict] = None) -> Dict[str, Any]:
-        """메시지 저장 및 세션 업데이트 시간 갱신"""
+        """메시지 저장 및 세션 제목/시간 갱신."""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
             self._log_pool_usage(pool, "acquire")
             async with conn.transaction():
-                # 메시지 저장
+                # 메시지 Insert
                 payload_json = json.dumps(payload) if payload else None
                 msg_row = await conn.fetchrow("""
                     INSERT INTO chat.messages (session_id, role, content, payload_json)
@@ -229,7 +226,7 @@ class DBManager:
                     RETURNING id, created_at
                 """, session_id, role, content, payload_json)
                 
-                # 세션 updated_at 갱신 + 최초 사용자 질문으로 제목 설정
+                # 세션 갱신 (첫 사용자 질문 시 제목 자동 설정)
                 if role == "user":
                     title = (content or "").strip()
                     if title:
@@ -262,12 +259,11 @@ class DBManager:
                 }
 
     async def delete_session(self, session_id: str) -> bool:
-        """세션 삭제 (Cascade로 메시지도 자동 삭제됨)"""
+        """세션 삭제 (연관 메시지도 자동 삭제)."""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
             self._log_pool_usage(pool, "acquire")
             result = await conn.execute("DELETE FROM chat.sessions WHERE id = $1", session_id)
-            # result format: 'DELETE 1'
             deleted_count = int(result.split(" ")[1])
             return deleted_count > 0
 

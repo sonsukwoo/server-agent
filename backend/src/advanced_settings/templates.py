@@ -1,32 +1,33 @@
-"""고급 설정 템플릿 및 쿼리."""
+"""
+데이터베이스 알림 트리거 및 함수 설정용 SQL 템플릿.
 
-# -----------------------------------------------------------------------------
-# SQL Templates (Hardcoded for Safety)
-# -----------------------------------------------------------------------------
+알림 규칙 생성 시 DB에 적용할 트리거와 함수를 정의하며,
+실시간 감시 및 조건 충족 시 알림 메커니즘을 설정합니다.
+"""
 
 TRIGGER_FUNC_TEMPLATE = """
 CREATE OR REPLACE FUNCTION monitor.func_check_{rule_id}()
 RETURNS TRIGGER AS $$
 DECLARE
     last_triggered TIMESTAMPTZ;
-    cooldown_sec INTEGER := 60; -- 1분 쿨다운 (하드코딩 또는 변수화 가능)
+    cooldown_sec INTEGER := 60; -- 알림 쿨다운 (60초)
 BEGIN
-    -- 조건 확인: {target_column} {operator} {threshold}
+    -- 조건 확인
     IF NEW.{target_column} {operator} {threshold} THEN
-        -- 마지막 발생 시간 확인 (DB 조회 없이 단순 시간차는 어렵으므로, 히스토리 테이블 활용)
+        -- 최근 알림 시간 조회
         SELECT created_at INTO last_triggered
         FROM monitor.alert_history
         WHERE rule_id = {rule_id}
         ORDER BY created_at DESC
         LIMIT 1;
 
-        -- 쿨다운 / 상태 체크 (마지막 알림 이후 일정 시간이 지났거나, 알림이 없었을 때만)
+        -- 쿨다운 체크 및 알림 발송
         IF last_triggered IS NULL OR (NOW() - last_triggered) > (cooldown_sec || ' seconds')::interval THEN
             -- 이력 저장
             INSERT INTO monitor.alert_history (rule_id, message, value)
             VALUES ({rule_id}, '{message}', NEW.{target_column});
             
-            -- 알림 채널 전송
+            -- 알림 채널로 이벤트 전송
             PERFORM pg_notify('alert_channel', json_build_object(
                 'rule_id', {rule_id},
                 'message', '{message}',

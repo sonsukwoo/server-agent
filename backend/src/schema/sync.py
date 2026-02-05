@@ -1,25 +1,18 @@
-"""
-연결된 DB 스키마를 조회하고 Qdrant 임베딩 서버와 동기화하는 로직
-"""
+"""DB 스키마 조회 및 Qdrant 임베딩 동기화."""
 import json
-
-import hashlib
 import logging
-from pathlib import Path
 from config.settings import settings
 from src.agents.mcp_clients.connector import postgres_client, qdrant_embeddings_client
 
 logger = logging.getLogger("uvicorn.error")
 
 async def sync_schema_embeddings_mcp() -> None:
-    """DB 스키마를 읽어 Qdrant MCP 임베딩 서버로 업서트"""
+    """DB 스키마를 Qdrant 임베딩 서버로 업서트 (해시 변경 시)."""
     logger.info("스키마 임베딩 동기화 시작")
 
     excluded_schemas = tuple(
         s.strip() for s in settings.schema_exclude_namespaces.split(",") if s.strip()
     )
-    # SQL 인젝션 방지를 위해 파라미터 바인딩은 어렵지만, settings 값은 신뢰한다고 가정하거나
-    # 안전하게 포맷팅. 여기서는 간단히 리스트 문자열로 변환.
     excluded_str = ", ".join(f"'{s}'" for s in excluded_schemas)
     
     tables_sql = f"""
@@ -90,14 +83,13 @@ async def sync_schema_embeddings_mcp() -> None:
         logger.info("스키마 테이블 없음: 임베딩 스킵")
         return
 
-    # 컬렉션 존재 여부 확인/생성 (없으면 생성되므로 업서트 강제)
+    # 컬렉션 생성 및 해시 비교
     collection_created = False
     async with qdrant_embeddings_client() as qclient:
         ensure_msg = await qclient.call_tool("ensure_collection", {"vector_size": 1536})
         if isinstance(ensure_msg, str) and ("생성" in ensure_msg or "created" in ensure_msg.lower()):
             collection_created = True
 
-        # schema hash 비교 (변경 없고 컬렉션도 이미 있으면 스킵)
         from .hash_utils import calculate_schema_hash, read_hash_file, write_hash_file
         
         schema_hash = calculate_schema_hash(docs)
@@ -121,7 +113,6 @@ def _infer_primary_time(columns: list[dict]) -> str | None:
         if col.get("name") in {"time", "timestamp", "created_at"}:
             return col.get("name")
     return None
-
 
 
 def _infer_join_keys(columns: list[dict]) -> list[str]:
