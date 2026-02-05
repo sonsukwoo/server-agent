@@ -16,7 +16,7 @@ services:
       - TZ=Asia/Seoul
       - MCP_TRANSPORT=http
       - MCP_POSTGRES_URL=http://mcp-postgres:8000
-      - MCP_QDRANT_URL=http://host.docker.internal:9012
+      - MCP_QDRANT_URL=http://mcp-qdrant:8000
     volumes:
       - ./backend:/app
     networks:
@@ -49,11 +49,13 @@ services:
       context: ./mcp_servers/qdrant
       dockerfile: Dockerfile
     container_name: mcp-qdrant
-    network_mode: host
     env_file:
       - ./backend/.env
-    # network_mode: host에서는 포트 맵핑이 무시되므로 command에서 직접 지정
-    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "9012" ]
+    ports:
+      - "9012:8000"
+    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
+    networks:
+      - agent-network
 
   # Frontend (Vite + React)
   frontend:
