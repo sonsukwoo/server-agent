@@ -103,26 +103,11 @@ async def sync_schema_embeddings_mcp() -> None:
         schema_hash = calculate_schema_hash(docs)
         stored_hash = read_hash_file()
         
-        # Qdrant 실제 데이터 개수 확인 (수동 삭제 대응)
-        try:
-            info_raw = await qclient.call_tool("get_collection_info", {})
-            info = json.loads(info_raw) if info_raw else {}
-            qdrant_count = info.get("count", 0)
-        except Exception as e:
-            logger.warning(f"Qdrant 상태 확인 실패(무시하고 진행): {e}")
-            qdrant_count = -1
-
-        if stored_hash == schema_hash and not collection_created and qdrant_count == len(docs):
-            logger.info("스키마 및 데이터 개수 변경 없음: 임베딩 스킵")
+        if stored_hash == schema_hash and not collection_created:
+            logger.info("스키마 변경 없음: 임베딩 스킵")
             return
 
-        if qdrant_count != len(docs):
-            logger.info(f"데이터 개수 불일치 감지 (DB: {len(docs)}, Qdrant: {qdrant_count}): 강제 동기화")
-
-        result = await qclient.call_tool("upsert_schema", {"docs": docs})
-        logger.info("Qdrant 업서트 결과: %s", result)
-        if result and ("실패" in result or "error" in result.lower()):
-            raise Exception(f"Qdrant 업서트 실패: {result}")
+        await qclient.call_tool("upsert_schema", {"docs": docs})
 
     write_hash_file(schema_hash)
     logger.info("스키마 임베딩 완료: 테이블 %s개", len(docs))
