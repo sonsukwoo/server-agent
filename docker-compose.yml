@@ -9,19 +9,25 @@ services:
     container_name: server-agent-backend
     env_file:
       - ./backend/.env
-    network_mode: host
+    ports:
+      - "8000:8000"
     environment:
+      # 추가적으로 덮어쓸 변수가 있다면 여기에 정의 (비워두거나 인입 경로 명시)
       - TZ=Asia/Seoul
       - MCP_TRANSPORT=http
-      - MCP_POSTGRES_URL=http://127.0.0.1:9010
-      - MCP_QDRANT_URL=http://127.0.0.1:9012
-    # 멀티 워커로 동시성 처리 능력 향상 (CPU 바운드 작업 분산)
-    command: [ "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4" ]
+      - MCP_POSTGRES_URL=http://mcp-postgres:8000
+      - MCP_QDRANT_URL=http://mcp-qdrant:8000
     volumes:
       - ./backend:/app
+    networks:
+      - agent-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Allow access to host DB
     depends_on:
-      - mcp-postgres
-      - mcp-qdrant
+      mcp-postgres:
+        condition: service_started
+      mcp-qdrant:
+        condition: service_started
 
   # MCP - Postgres (containerized)
   mcp-postgres:
@@ -29,11 +35,13 @@ services:
       context: ./mcp_servers/postgres
       dockerfile: Dockerfile
     container_name: mcp-postgres
-    network_mode: host
     env_file:
       - ./backend/.env
-    # host mode에서는 포트를 호스트에 직접 노출합니다.
-    command: [ "uvicorn", "server:http_app", "--host", "127.0.0.1", "--port", "9010" ]
+    ports:
+      - "9010:8000"
+    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
+    networks:
+      - agent-network
 
   # MCP - Qdrant (Search + Embeddings)
   mcp-qdrant:
@@ -41,11 +49,13 @@ services:
       context: ./mcp_servers/qdrant
       dockerfile: Dockerfile
     container_name: mcp-qdrant
-    network_mode: host
     env_file:
       - ./backend/.env
-    # host mode에서는 포트를 호스트에 직접 노출합니다.
-    command: [ "uvicorn", "server:http_app", "--host", "127.0.0.1", "--port", "9012" ]
+    ports:
+      - "9012:8000"
+    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
+    networks:
+      - agent-network
 
   # Frontend (Vite + React)
   frontend:
@@ -53,6 +63,13 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: server-agent-frontend
-    network_mode: host
+    ports:
+      - "3000:80"
     depends_on:
       - backend
+    networks:
+      - agent-network
+
+networks:
+  agent-network:
+    driver: bridge

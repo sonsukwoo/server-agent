@@ -100,6 +100,9 @@ async def query(body: QueryRequest, background_tasks: BackgroundTasks):
             try:
                 # LangGraph astream 호출
                 async for event in sql_app.astream(initial_state):
+                    # [Optimization] 단일 프로세스 환경에서 다른 요청이 처리될 수 있도록 제어권 양보
+                    await asyncio.sleep(0)
+                    
                     for node_name, output in event.items():
                         # 상태 업데이트 추적
                         if "validation_reason" in output:
