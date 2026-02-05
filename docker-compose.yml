@@ -9,20 +9,14 @@ services:
     container_name: server-agent-backend
     env_file:
       - ./backend/.env
-    ports:
-      - "8000:8000"
+    network_mode: host
     environment:
-      # 추가적으로 덮어쓸 변수가 있다면 여기에 정의 (비워두거나 인입 경로 명시)
       - TZ=Asia/Seoul
       - MCP_TRANSPORT=http
-      - MCP_POSTGRES_URL=http://mcp-postgres:8000
-      - MCP_QDRANT_URL=http://mcp-qdrant:8000
+      - MCP_POSTGRES_URL=http://127.0.0.1:9010
+      - MCP_QDRANT_URL=http://127.0.0.1:9012
     volumes:
       - ./backend:/app
-    networks:
-      - agent-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway" # Allow access to host DB
     depends_on:
       mcp-postgres:
         condition: service_started
@@ -49,13 +43,11 @@ services:
       context: ./mcp_servers/qdrant
       dockerfile: Dockerfile
     container_name: mcp-qdrant
+    network_mode: host
     env_file:
       - ./backend/.env
-    ports:
-      - "9012:8000"
-    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
-    networks:
-      - agent-network
+    # host mode에서는 포트를 호스트에 직접 노출합니다.
+    command: [ "uvicorn", "server:http_app", "--host", "127.0.0.1", "--port", "9012" ]
 
   # Frontend (Vite + React)
   frontend:
