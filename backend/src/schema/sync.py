@@ -107,7 +107,9 @@ async def sync_schema_embeddings_mcp() -> None:
             logger.info("스키마 변경 없음: 임베딩 스킵")
             return
 
-        await qclient.call_tool("upsert_schema", {"docs": docs})
+        result = await qclient.call_tool("upsert_schema", {"docs": docs})
+        if result and ("실패" in result or "error" in result.lower()):
+            raise Exception(f"Qdrant 업서트 실패: {result}")
 
     write_hash_file(schema_hash)
     logger.info("스키마 임베딩 완료: 테이블 %s개", len(docs))

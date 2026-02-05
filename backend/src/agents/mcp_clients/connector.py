@@ -23,7 +23,7 @@ class MCPHttpWrapper:
     """HTTP 기반 MCP 클라이언트 래퍼"""
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(timeout=300.0)
 
     async def __aenter__(self):
         return self

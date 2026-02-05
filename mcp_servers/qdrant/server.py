@@ -38,6 +38,7 @@ def get_client() -> QdrantClient:
         _client = QdrantClient(
             url=QDRANT_URL,
             api_key=QDRANT_API_KEY if QDRANT_API_KEY else None,
+            timeout=60,
         )
     return _client
 
@@ -94,7 +95,7 @@ def _search_qdrant(query: str, top_k: int) -> list[dict]:
         if QDRANT_API_KEY:
             headers["api-key"] = QDRANT_API_KEY
         req = request.Request(url, data=payload, headers=headers, method="POST")
-        with request.urlopen(req, timeout=15) as resp:
+        with request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         results = data.get("result", [])
 
@@ -220,13 +221,14 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    import asyncio
     if name == "search_tables":
         query = arguments.get("query", "")
         top_k = arguments.get("top_k", 5)
         if not query:
             return _error("오류: query가 비어있습니다")
         try:
-            candidates = _search_qdrant(query, top_k)
+            candidates = await asyncio.to_thread(_search_qdrant, query, top_k)
             return [TextContent(type="text", text=json.dumps(candidates, ensure_ascii=False))]
         except Exception as e:
             return _error(f"검색 실패: {str(e)}")
@@ -234,7 +236,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "ensure_collection":
         size = arguments.get("vector_size", 1536)
         try:
-            msg = _ensure_collection(size)
+            msg = await asyncio.to_thread(_ensure_collection, size)
             return [TextContent(type="text", text=msg)]
         except Exception as e:
             return _error(f"컬렉션 생성 실패: {e}")
@@ -244,7 +246,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if not docs:
             return _error("docs가 비어있습니다")
         try:
-            msg = _upsert_schema(docs)
+            msg = await asyncio.to_thread(_upsert_schema, docs)
             return [TextContent(type="text", text=msg)]
         except Exception as e:
             return _error(f"업서트 실패: {e}")
