@@ -230,6 +230,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["docs"],
             },
         ),
+        Tool(
+            name="get_collection_info",
+            description="Qdrant 컬렉션 상태 및 데이터 개수 확인",
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
 
