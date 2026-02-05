@@ -23,6 +23,7 @@ app = Server("qdrant-tools")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "table_index")
+logger.info("Starting Qdrant MCP server: collection=%s", QDRANT_COLLECTION)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
@@ -169,21 +170,30 @@ def _upsert_schema(docs: list[dict]):
 
 
     points = []
+    seen_ids = {}
     for doc, vector in zip(docs, vectors):
+        table_full_name = f"{doc['schema']}.{doc['table_name']}"
         point_id = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                f"{doc['schema']}.{doc['table_name']}:{doc['doc_type']}",
+                f"{table_full_name}:{doc['doc_type']}",
             )
         )
+        
+        if point_id in seen_ids:
+            logger.warning("upsert_schema: ID COLLISION! table=%s already seen as %s", table_full_name, seen_ids[point_id])
+        else:
+            seen_ids[point_id] = table_full_name
+            
+        logger.info("upsert_schema: preparing point for table=%s id=%s", table_full_name, point_id)
         points.append(PointStruct(id=point_id, vector=vector, payload=doc))
 
     client.upsert(
         collection_name=QDRANT_COLLECTION,
         points=points
     )
-    logger.info("upsert_schema: upserted points=%s collection=%s", len(points), QDRANT_COLLECTION)
-    return f"{len(points)}개 스키마 업로드 완료"
+    logger.info("upsert_schema: successfully upserted points=%s (unique=%s) collection=%s", len(points), len(seen_ids), QDRANT_COLLECTION)
+    return f"{len(seen_ids)}개 스키마 업로드 완료 (총 {len(points)}개 중 중복 제외)"
 
 
 def _error(message: str) -> list[TextContent]:
