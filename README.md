@@ -92,7 +92,7 @@
 ### Backend
 - **Framework**: `FastAPI` (High-performance API)
 - **Agent Orchestration**: `LangGraph`, `LangChain`
-- **Database**: `PostgreSQL` (Asyncpg for async I/O)
+- **Database**: `PostgreSQL` (Asyncpg for async I/O & `asyncio.to_thread` for non-blocking MCP)
 - **Vector Store**: `Qdrant` (Schema embedding & storage)
 - **Tooling**: `MCP (Model Context Protocol)` (Standardized tool interface)
 
@@ -228,9 +228,11 @@ server-agent/
 Docker Compose를 사용하여 모든 서비스를 한 번에 실행합니다.
 
 ```bash
+# 리눅스 환경에서는 network_mode: host가 적용됩니다.
+git pull
 docker compose up --build -d
 ```
 
 ### 3. 접속
-- **웹 UI**: [http://localhost:5173](http://localhost:5173) (또는 80번 포트 설정에 따름)
+- **웹 UI**: [http://localhost:3000](http://localhost:3000) (Nginx Proxy)
 - **API 문서**: [http://localhost:8000/docs](http://localhost:8000/docs)
