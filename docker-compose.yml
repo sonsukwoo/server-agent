@@ -16,7 +16,7 @@ services:
       - TZ=Asia/Seoul
       - MCP_TRANSPORT=http
       - MCP_POSTGRES_URL=http://mcp-postgres:8000
-      - MCP_QDRANT_URL=http://mcp-qdrant:8000
+      - MCP_QDRANT_URL=http://host.docker.internal:9012
     volumes:
       - ./backend:/app
     networks:
