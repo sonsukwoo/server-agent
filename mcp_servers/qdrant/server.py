@@ -39,7 +39,8 @@ def get_client() -> QdrantClient:
         _client = QdrantClient(
             url=QDRANT_URL,
             api_key=QDRANT_API_KEY if QDRANT_API_KEY else None,
-            timeout=60,
+            timeout=300,
+            prefer_grpc=False,
         )
     return _client
 
@@ -188,11 +189,18 @@ def _upsert_schema(docs: list[dict]):
         logger.info("upsert_schema: preparing point for table=%s id=%s", table_full_name, point_id)
         points.append(PointStruct(id=point_id, vector=vector, payload=doc))
 
-    client.upsert(
-        collection_name=QDRANT_COLLECTION,
-        points=points
-    )
-    logger.info("upsert_schema: successfully upserted points=%s (unique=%s) collection=%s", len(points), len(seen_ids), QDRANT_COLLECTION)
+    try:
+        logger.info("upsert_schema: starting client.upsert for %s points to collection=%s", len(points), QDRANT_COLLECTION)
+        client.upsert(
+            collection_name=QDRANT_COLLECTION,
+            points=points,
+            wait=True
+        )
+        logger.info("upsert_schema: successfully completed client.upsert for %s points", len(points))
+    except Exception as e:
+        logger.error("upsert_schema: FAILED to upsert points: %s", str(e), exc_info=True)
+        return f"업서트 실패: {str(e)}"
+
     return f"{len(seen_ids)}개 스키마 업로드 완료 (총 {len(points)}개 중 중복 제외)"
 
 
