@@ -18,10 +18,8 @@ services:
     volumes:
       - ./backend:/app
     depends_on:
-      mcp-postgres:
-        condition: service_started
-      mcp-qdrant:
-        condition: service_started
+      - mcp-postgres
+      - mcp-qdrant
 
   # MCP - Postgres (containerized)
   mcp-postgres:
@@ -29,13 +27,11 @@ services:
       context: ./mcp_servers/postgres
       dockerfile: Dockerfile
     container_name: mcp-postgres
+    network_mode: host
     env_file:
       - ./backend/.env
-    ports:
-      - "9010:8000"
-    command: [ "uvicorn", "server:http_app", "--host", "0.0.0.0", "--port", "8000" ]
-    networks:
-      - agent-network
+    # host mode에서는 포트를 호스트에 직접 노출합니다.
+    command: [ "uvicorn", "server:http_app", "--host", "127.0.0.1", "--port", "9010" ]
 
   # MCP - Qdrant (Search + Embeddings)
   mcp-qdrant:
@@ -55,15 +51,6 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: server-agent-frontend
-    ports:
-      - "3000:80"
+    network_mode: host
     depends_on:
       - backend
-    networks:
-      - agent-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-networks:
-  agent-network:
-    driver: bridge
