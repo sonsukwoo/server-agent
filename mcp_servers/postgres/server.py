@@ -117,19 +117,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         
         # 2. 실행 (Bypass 모드이거나 SELECT 쿼리인 경우)
         try:
+            import asyncio
             # Bypass 모드(INSERT/DELETE 등)는 결과를 반환하지 않을 수 있으므로 분기 처리
             if bypass_validation:
-                with _with_conn() as conn:
-                    conn.autocommit = True
-                    cursor = conn.cursor()
-                    try:
-                        cursor.execute(query)
-                        return [TextContent(type="text", text="Command Executed Successfully")]
-                    finally:
-                        cursor.close()
+                def _run_bypass():
+                    with _with_conn() as conn:
+                        conn.autocommit = True
+                        cursor = conn.cursor()
+                        try:
+                            cursor.execute(query)
+                            return "Command Executed Successfully"
+                        finally:
+                            cursor.close()
+                
+                msg = await asyncio.to_thread(_run_bypass)
+                return [TextContent(type="text", text=msg)]
+
             else:
-                # 일반 SELECT (JSON 결과 반환)
-                result_json = _execute_select(query)
+                # 일반 SELECT (JSON 결과 반환) - 별도 스레드에서 실행하여 블로킹 방지
+                result_json = await asyncio.to_thread(_execute_select, query)
                 return [TextContent(type="text", text=result_json)]
                 
         except Exception as e:
