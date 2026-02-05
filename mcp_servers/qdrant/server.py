@@ -132,7 +132,21 @@ def _search_qdrant(query: str, top_k: int) -> list[dict]:
             "score": round(score or 0.0, 4),
         })
 
+    logger.info("search_qdrant: query='%s' top_k=%s results=%s", query, top_k, len(candidates))
     return candidates
+
+
+def _get_collection_info():
+    client = get_client()
+    try:
+        count = client.count(collection_name=QDRANT_COLLECTION).count
+        return {
+            "collection": QDRANT_COLLECTION,
+            "count": count,
+            "status": "ok"
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def _upsert_schema(docs: list[dict]):
@@ -250,6 +264,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=msg)]
         except Exception as e:
             return _error(f"업서트 실패: {e}")
+
+    if name == "get_collection_info":
+        try:
+            info = await asyncio.to_thread(_get_collection_info)
+            return [TextContent(type="text", text=json.dumps(info, ensure_ascii=False))]
+        except Exception as e:
+            return _error(f"상태 확인 실패: {e}")
 
     return _error(f"알 수 없는 도구: {name}")
 

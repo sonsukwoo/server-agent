@@ -108,6 +108,7 @@ async def sync_schema_embeddings_mcp() -> None:
             return
 
         result = await qclient.call_tool("upsert_schema", {"docs": docs})
+        logger.info("Qdrant 업서트 결과: %s", result)
         if result and ("실패" in result or "error" in result.lower()):
             raise Exception(f"Qdrant 업서트 실패: {result}")
 
