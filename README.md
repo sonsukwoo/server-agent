@@ -188,7 +188,11 @@ server-agent/
 │   │   │   ├── prompts.py   # 단계별 시스템/사용자 프롬프트 관리
 │   │   │   ├── state.py     # 에이전트 실행 상태(State) 스키마 정의
 │   │   │   ├── chat_context.py # 에이전트용 채팅 맥락(Summary+Recent) 구성 엔진
-│   │   │   └── table_expand_too.py # 캐시 기반 테이블 정보 확장 도구
+│   │   │   ├── table_expand_too.py # 캐시 기반 테이블 정보 확장 도구
+│   │   │   └── middleware/  # 입력/출력 및 요청 검증 가드
+│   │   │       ├── input_guard.py      # 초기 입력 보안/길이 검사
+│   │   │       ├── parsed_request_guard.py # LLM 파싱 결과 논리적 검증
+│   │   │       └── sql_safety_guard.py # SQL 파괴적 명령어 차단
 │   │   └── mcp_clients/     # 외부 MCP 서버 통합 클라이언트
 │   │       └── connector.py # HTTP 기반 MCP 서버 연동 공통 모듈
 │   ├── api/                 # FastAPI 웹 프레임워크 인프라
