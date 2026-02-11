@@ -8,9 +8,12 @@ from config.settings import settings
 
 logger = logging.getLogger("CHECKPOINTER")
 
-# 모듈 레벨 싱글톤
+import asyncio
+
+# 모듈 레벨 싱글톤 및 락
 _checkpointer: AsyncPostgresSaver | None = None
 _pool: AsyncConnectionPool | None = None
+_lock = asyncio.Lock()
 
 
 def _build_dsn() -> str:
@@ -22,35 +25,48 @@ def _build_dsn() -> str:
 
 
 async def get_checkpointer() -> AsyncPostgresSaver:
-    """AsyncPostgresSaver 싱글톤 반환 (지연 초기화)."""
+    """AsyncPostgresSaver 싱글톤 반환 (지연 초기화, Thread-safe)."""
     global _checkpointer, _pool
 
     if _checkpointer is not None:
         return _checkpointer
 
-    import psycopg
-    
-    dsn = _build_dsn()
-    
-    # setup()은 CREATE INDEX CONCURRENTLY 등을 사용할 수 있으므로
-    # autocommit 모드의 별도 비동기 연결로 수행합니다.
-    async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
-        checkpointer = AsyncPostgresSaver(conn)
-        await checkpointer.setup()
+    async with _lock:
+        # Double-check inside lock
+        if _checkpointer is not None:
+            return _checkpointer
 
-    # AsyncPostgresSaver용 풀 설정 (자동 커밋 필수)
-    # kwargs={"autocommit": True} -> psycopg 3.x 풀 옵션
-    _pool = AsyncConnectionPool(
-        conninfo=dsn, 
-        min_size=1, 
-        max_size=3, 
-        open=False,
-        kwargs={"autocommit": True}
-    )
-    await _pool.open()
+        import psycopg
+        
+        try:
+            dsn = _build_dsn()
+            
+            # 1. 1회성 연결로 테이블 생성 (setup)
+            # setup()은 CREATE INDEX CONCURRENTLY 등을 사용할 수 있으므로
+            # autocommit 모드의 별도 비동기 연결로 수행합니다.
+            async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
+                checkpointer = AsyncPostgresSaver(conn)
+                await checkpointer.setup()
 
-    _checkpointer = AsyncPostgresSaver(_pool)
-    logger.info("AsyncPostgresSaver 초기화 완료 (DSN: %s)", settings.db_host)
+            # 2. 커넥션 풀 초기화
+            # AsyncPostgresSaver용 풀 설정 (자동 커밋 필수)
+            # kwargs={"autocommit": True} -> psycopg 3.x 풀 옵션
+            _pool = AsyncConnectionPool(
+                conninfo=dsn, 
+                min_size=1, 
+                max_size=5, # 동시성 증가 대비하여 3 -> 5
+                open=False,
+                kwargs={"autocommit": True}
+            )
+            await _pool.open()
+
+            _checkpointer = AsyncPostgresSaver(_pool)
+            logger.info("AsyncPostgresSaver 초기화 완료 (DSN Host: %s)", settings.db_host)
+        
+        except Exception as e:
+            logger.error("AsyncPostgresSaver 초기화 실패: %s", e)
+            raise
+
     return _checkpointer
 
 

@@ -14,7 +14,7 @@ PARSE_REQUEST_SYSTEM = """
 필드:
 - intent: 짧은 의도 요약 (영문 snake_case)
 - is_followup: 이전 결과를 참조하는 후속 질문인지 (true/false)
-- time_range: {start, end, timezone} (ISO 8601)
+- time_range: {start, end, timezone, all_time} (ISO 8601, all_time=true면 전체 기간)
 - metric: 핵심 측정 지표
 - condition: 조건 또는 기준
 - output: 출력 형식 (summary/list 등)

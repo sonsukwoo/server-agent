@@ -49,23 +49,22 @@ structured_llm_fast = llm_fast.bind(response_format={"type": "json_object"})
 def _extract_previous_sql_from_messages(state: TextToSQLState) -> str:
     """state['messages']에서 가장 최근 AI 응답 안의 SQL 블록을 추출.
 
-    기존에는 user_question에 [Previous Query Context]를 주입했지만,
-    이제는 Checkpointer가 관리하는 messages에서 자동으로 추출합니다.
-    또한 state['generated_sql']이 있으면 우선 사용합니다.
+    SSOT 원칙: 'generated_sql'은 현재 턴의 임시 상태일 수 있으므로 참조하지 않고,
+    오직 확정된 대화 히스토리(messages)에서만 이전 쿼리를 찾습니다.
     """
-    # 1. 이전 턴의 generated_sql이 checkpointer에 남아있으면 직접 사용
-    prev_sql = state.get("generated_sql", "")
-    if prev_sql and prev_sql != "생성 실패":
-        return prev_sql
-
-    # 2. messages에서 가장 최근 AI 응답의 SQL 블록 추출
     import re
+    # messages 역순 탐색 (가장 최근 대화부터)
     for msg in reversed(state.get("messages", [])):
-        if hasattr(msg, "type") and msg.type == "ai":
+        # AI 메시지이면서 툴 호출이 아닌 경우 (최종 답변)
+        if isinstance(msg, AIMessage) and not msg.tool_calls:
+            # Markdown Code Block 추출
             sql_match = re.search(r'```sql\n(.*?)\n```', msg.content, re.DOTALL)
             if sql_match:
                 return sql_match.group(1).strip()
-
+            
+            # (옵션) 코드 블록이 없더라도 SELECT 문이 포함되어 있다면 추출 고려
+            # 하지만 안전을 위해 코드 블록만 인정
+            
     return ""
 
 
@@ -396,10 +395,15 @@ async def parse_request(state: TextToSQLState) -> dict:
     if not parsed.get("intent"):
         parsed["intent"] = "unknown"
 
-    # 2. Time Range 상속 (새로운 시간 언급이 없으면 이전 시간 유지)
+    # 2. Time Range 상속 로직 개선
     new_time = parsed.get("time_range", {})
-    if not new_time or (not new_time.get("start") and not new_time.get("end")):
-        # 새 요청에 시간이 없으면 이전 시간 상속
+    is_all_time = new_time.get("all_time") if new_time else False
+
+    if is_all_time:
+        # 사용자가 명시적으로 "전체 기간"을 요청한 경우 -> 상속 금지
+        logger.info("TEXT_TO_SQL:parse_request all_time=True detected. Skipping inheritance.")
+    elif not new_time or (not new_time.get("start") and not new_time.get("end")):
+        # 새 요청에 시간 범위가 없고 all_time도 아닌 경우 -> 이전 맥락 상속
         if old_parsed.get("time_range"):
             parsed["time_range"] = old_parsed.get("time_range")
             logger.info("TEXT_TO_SQL:parse_request inherited time_range from history")
@@ -841,8 +845,10 @@ async def validate_llm(state: TextToSQLState) -> dict:
         return {"verdict": "OK", "validation_reason": "검증 응답 파싱 실패, 결과 수용"}
 
     verdict = parsed.get("verdict", "OK")
-    reason = parsed.get("reason", "")
-    hint = parsed.get("hint", "")
+    # 호환성: feedback_to_sql 우선, 없으면 reason fallback
+    reason = parsed.get("feedback_to_sql") or parsed.get("reason", "")
+    # 호환성: correction_hint 우선, 없으면 hint fallback
+    hint = parsed.get("correction_hint") or parsed.get("hint", "")
     unnecessary_tables = parsed.get("unnecessary_tables", [])
 
     # 재시도 카운트 관리
@@ -965,6 +971,15 @@ async def classify_intent(state: TextToSQLState) -> dict:
         parsed = json.loads(response.content)
         intent = parsed.get("intent", "sql")
         reason = parsed.get("reason", "")
+        
+        # 라우팅 방어: 소문자 변환 및 화이트리스트 검증
+        if isinstance(intent, str):
+            intent = intent.lower().strip()
+        
+        if intent not in ["sql", "general"]:
+            logger.warning("TEXT_TO_SQL:classify_intent invalid_intent=%s, fallback to sql", intent)
+            intent = "sql"
+            
         logger.info("TEXT_TO_SQL:classify_intent result=%s reason=%s", intent, reason)
     except Exception as e:
         logger.warning("TEXT_TO_SQL:classify_intent error=%s, defaulting to sql", e)

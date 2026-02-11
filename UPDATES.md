@@ -60,3 +60,60 @@
 | **정보 부족 시** | 에러 발생 또는 환각(Hallucination) | **즉시 멈추고 역질문 (HITL)** |
 | **일반 대화** | 불가능 (SQL 생성 실패로 처리) | **가능 (별도 경로로 우회 처리)** |
 | **결과물** | 단순 데이터 표(Table) | **데이터 표 + 인사이트 요약 보고서** |
+
+---
+
+## 📡 3. API 이벤트 규약 (API Event Contract)
+
+프론트엔드와 백엔드 간의 실시간 통신을 위한 **Server-Sent Events (SSE)** 프로토콜 명세입니다.
+
+### 1. `status` (진행 상태)
+- **설명**: 각 단계별 진행 상황을 실시간으로 알립니다.
+- **Payload**:
+  ```json
+  {
+    "type": "status",
+    "message": "SQL 쿼리 생성 중...",
+    "node": "generate_sql"
+  }
+  ```
+
+### 2. `clarification` (역질문 - HITL)
+- **설명**: 정보가 부족할 때 사용자에게 추가 정보를 요청합니다.
+- **Payload**:
+  ```json
+  {
+    "type": "clarification",
+    "message": "어떤 기간의 매출을 원하시나요?",
+    "session_id": "uuid-..."
+  }
+  ```
+
+### 3. `result` (최종 결과)
+- **설명**: 작업 완료 성공 시 최종 데이터와 보고서를 전달합니다.
+- **Payload**:
+  ```json
+  {
+    "type": "result",
+    "payload": {
+      "ok": true,
+      "agent": "sql" | "general",
+      "session_id": "uuid-...",
+      "data": {
+        "report": "...",
+        "suggested_actions": ["..."],
+        "raw": { ... }
+      }
+    }
+  }
+  ```
+
+### 4. `error` (오류 발생)
+- **설명**: 처리 중 치명적인 오류가 발생했을 때 전송됩니다.
+- **Payload**:
+  ```json
+  {
+    "type": "error",
+    "message": "서버 내부 오류가 발생했습니다."
+  }
+  ```

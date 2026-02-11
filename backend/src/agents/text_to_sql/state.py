@@ -40,9 +40,15 @@ Verdict = Literal[
 
 
 class TextToSQLState(TypedDict, total=False):
-    """Text-to-SQL 에이전트 상태."""
+    """Text-to-SQL 에이전트 상태.
+    
+    [SSOT 원칙]
+    - messages: 대화의 진실 공급원(Source of Truth)입니다. 모든 의사결정은 이 히스토리를 기반으로 합니다.
+    - 나머지 필드(generated_sql, parsed_request 등): 현재 턴 내에서 노드 간 데이터를 전달하기 위한 '일시적(Transient)' 상태입니다.
+      다음 턴으로 넘어갈 때 이 값들에 의존하지 않도록 주의해야 합니다.
+    """
 
-    # 대화 히스토리 (LangGraph 내장 add_messages 리듀서 적용)
+    # 대화 히스토리 (LangGraph 내장 add_messages 리듀서 적용 - SSOT)
     messages: Annotated[list[BaseMessage], add_messages]
 
     # 입력
