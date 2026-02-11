@@ -13,6 +13,10 @@ export interface QueryResponse {
         raw: any;
     } | null;
     error: string | null;
+    // HITL 역질문
+    clarification_needed?: boolean;
+    clarification_message?: string;
+    session_id?: string;
 }
 
 const getApiBaseUrl = () => {
@@ -103,34 +107,61 @@ export class ApiClient {
         let finalResult: QueryResponse | null = null;
         let buffer = '';
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
 
-            for (const line of lines) {
-                const trimmedLine = line.trim();
-                if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
+                for (const line of lines) {
+                    const trimmedLine = line.trim();
+                    if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
 
-                try {
-                    const data = JSON.parse(trimmedLine.slice(6));
-                    if (data.type === 'status' && onStatus) {
-                        onStatus(data.message);
-                    } else if (data.type === 'result') {
-                        finalResult = data.payload;
-                    } else if (data.type === 'error') {
-                        throw new Error(data.message);
+                    try {
+                        const data = JSON.parse(trimmedLine.slice(6));
+
+                        if (data.type === 'status' && onStatus) {
+                            onStatus(data.message);
+                        } else if (data.type === 'result') {
+                            finalResult = data.payload;
+                        } else if (data.type === 'clarification') {
+                            // 역질문 이벤트 처리
+                            finalResult = {
+                                ok: true,
+                                agent: 'system',
+                                session_id: data.session_id, // 백엔드에서 전달받은 session_id
+                                data: null,
+                                error: null,
+                                clarification_needed: true,
+                                clarification_message: data.message
+                            };
+                        } else if (data.type === 'error') {
+                            // 에러 발생 시 즉시 throw하여 루프 탈출 및 catch 블록으로 이동
+                            throw new Error(data.message);
+                        }
+                    } catch (e) {
+                        // JSON 파싱 에러나 내부 throw된 에러를 다시 던짐
+                        throw e;
                     }
-                } catch (e) {
-                    console.error('Failed to parse streaming data:', e, trimmedLine);
                 }
             }
+        } catch (error) {
+            // 스트림 읽기 중 에러 발생 시 (네트워크 오류, 백엔드 에러 등)
+            // 이미 finalResult가 있다면(드문 경우) 무시하거나, 에러를 우선시할지 결정.
+            // 여기서는 에러를 throw하여 UI에 실패를 알림.
+            throw error;
+        } finally {
+            reader.releaseLock();
         }
 
-        if (!finalResult) throw new Error('No result received from server');
+        if (!finalResult) {
+            // 스트림이 정상 종료되었으나 결과가 없는 경우 (백엔드 로직 오류 등)
+            throw new Error('No result received from server (Stream ended without result)');
+        }
+
         return finalResult;
     }
 

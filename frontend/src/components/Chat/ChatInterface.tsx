@@ -153,7 +153,9 @@ export const ChatInterface: React.FC = () => {
 
             const assistantMsg = {
                 role: 'assistant' as const,
-                text: result.data?.report || '',
+                text: result.clarification_needed
+                    ? (result.clarification_message || '추가 정보가 필요합니다.')
+                    : (result.data?.report || ''),
                 sqlResult: result.data?.raw?.sql_result,
                 visual_hint: result.data?.raw?.visual_hint,
                 logs: [...capturedLogs]

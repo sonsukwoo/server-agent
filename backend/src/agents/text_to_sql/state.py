@@ -1,5 +1,9 @@
-"""Text-to-SQL 에이전트 State 정의"""
-from typing import TypedDict, Optional, Literal
+"""Text-to-SQL 에이전트 State 정의."""
+
+from typing import TypedDict, Optional, Literal, Annotated
+
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage
 
 
 class ParsedRequest(TypedDict, total=False):
@@ -36,38 +40,48 @@ Verdict = Literal[
 
 
 class TextToSQLState(TypedDict, total=False):
-    """Text-to-SQL 에이전트 상태"""
+    """Text-to-SQL 에이전트 상태."""
+
+    # 대화 히스토리 (LangGraph 내장 add_messages 리듀서 적용)
+    messages: Annotated[list[BaseMessage], add_messages]
 
     # 입력
     user_question: str
     user_constraints: Optional[str]
+
+    # 의도 분류
+    classified_intent: str  # "sql" | "general"
 
     # 파싱
     parsed_request: ParsedRequest
     is_request_valid: bool
     request_error: str
 
+    # HITL: 정보 부족 시 역질문
+    needs_clarification: bool
+    clarification_question: str
+
     # 검색/선택
     table_candidates: list[TableCandidate]
     selected_tables: list[str]
     table_context: str
-    candidate_offset: int  # 확장 시작 인덱스
+    candidate_offset: int
 
     # SQL 생성/실행
     generated_sql: str
     sql_guard_error: str
     sql_result: list[dict]
     sql_error: str
-    raw_sql_result: str  # 디버깅용 (MCP 응답 원본)
+    raw_sql_result: str
 
     # 결과/검증
-    result_status: str  # ok | empty | error
+    result_status: str
     verdict: Verdict
     validation_reason: str
     feedback_to_sql: str
-    last_tool_usage: Optional[str]  # 프론트엔드 표시용 마지막 툴 사용 로그
+    last_tool_usage: Optional[str]
 
-    # 확장 상태 (generate_sql 내 툴 호출용)
+    # 확장 상태
     table_expand_attempted: bool
     table_expand_failed: bool
     table_expand_reason: Optional[str]
@@ -78,7 +92,7 @@ class TextToSQLState(TypedDict, total=False):
     validation_retry_count: int
     total_loops: int
 
-    # 기록 (디버깅 및 재시도용)
+    # 기록
     failed_queries: list[str]
 
     # 보고서

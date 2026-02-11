@@ -4,8 +4,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from config.settings import settings
 from src.db.db_manager import db_manager
+from src.db.checkpointer import close_checkpointer
 from src.schema.orchestrator import run_once, start_listener, stop_listener
 from src.advanced_settings import AlertListener
+
 
 logger = logging.getLogger("LIFESPAN")
 
@@ -44,6 +46,9 @@ async def lifespan(app: FastAPI):
     yield
     
     # 4. 종료 처리
+    # Checkpointer 연결 풀 종료
+    await close_checkpointer()
+
     # 스키마 리스너 종료
     if settings.enable_schema_sync:
         try:
@@ -55,3 +60,4 @@ async def lifespan(app: FastAPI):
     if alert_listener:
         await alert_listener.stop()
         logger.info("LIFESPAN: Alert listener stopped")
+

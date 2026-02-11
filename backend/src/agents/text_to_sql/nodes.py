@@ -4,7 +4,7 @@ import re
 import logging
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from config.settings import settings
 from src.agents.mcp_clients.connector import postgres_client, qdrant_search_client
@@ -19,6 +19,9 @@ from .prompts import (
     GENERATE_SQL_SYSTEM, GENERATE_SQL_USER,
     VALIDATE_RESULT_SYSTEM, VALIDATE_RESULT_USER,
     GENERATE_REPORT_SYSTEM, GENERATE_REPORT_USER,
+    CLASSIFY_INTENT_SYSTEM, CLASSIFY_INTENT_USER,
+    GENERAL_CHAT_SYSTEM, GENERAL_CHAT_USER,
+    CLARIFICATION_CHECK_SYSTEM, CLARIFICATION_CHECK_USER,
 )
 from .common.constants import (
     RETRIEVE_K, TOP_K
@@ -28,6 +31,8 @@ from .common.utils import (
     build_table_context, rebuild_context_from_candidates,
     classify_sql_error, next_batch, apply_elbow_cut
 )
+from langchain_core.messages import trim_messages
+
 
 logger = logging.getLogger("TEXT_TO_SQL")
 
@@ -36,6 +41,33 @@ llm_smart = ChatOpenAI(model=settings.model_smart, temperature=0)
 
 # JSON Mode 강제 바인딩 (전역 생성)
 structured_llm_fast = llm_fast.bind(response_format={"type": "json_object"})
+
+# ─────────────────────────────────────────
+# 대화 히스토리에서 이전 SQL 추출
+# ─────────────────────────────────────────
+
+def _extract_previous_sql_from_messages(state: TextToSQLState) -> str:
+    """state['messages']에서 가장 최근 AI 응답 안의 SQL 블록을 추출.
+
+    기존에는 user_question에 [Previous Query Context]를 주입했지만,
+    이제는 Checkpointer가 관리하는 messages에서 자동으로 추출합니다.
+    또한 state['generated_sql']이 있으면 우선 사용합니다.
+    """
+    # 1. 이전 턴의 generated_sql이 checkpointer에 남아있으면 직접 사용
+    prev_sql = state.get("generated_sql", "")
+    if prev_sql and prev_sql != "생성 실패":
+        return prev_sql
+
+    # 2. messages에서 가장 최근 AI 응답의 SQL 블록 추출
+    import re
+    for msg in reversed(state.get("messages", [])):
+        if hasattr(msg, "type") and msg.type == "ai":
+            sql_match = re.search(r'```sql\n(.*?)\n```', msg.content, re.DOTALL)
+            if sql_match:
+                return sql_match.group(1).strip()
+
+    return ""
+
 
 # ─────────────────────────────────────────
 # Helper functions (used by specific nodes)
@@ -157,14 +189,8 @@ def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
     failed = state.get("failed_queries", []) or []
     time_range = state.get("parsed_request", {}).get("time_range", {})
 
-    # 이전 SQL 쿼리 추출 (컨텍스트에서)
-    user_question = state.get("user_question", "")
-    previous_sql = ""
-    if "[Previous Query Context]" in user_question and "```sql" in user_question:
-        import re
-        sql_match = re.search(r'```sql\n(.*?)\n```', user_question, re.DOTALL)
-        if sql_match:
-            previous_sql = sql_match.group(1).strip()
+    # 이전 SQL 쿼리 추출 (대화 히스토리 또는 이전 턴의 generated_sql)
+    previous_sql = _extract_previous_sql_from_messages(state)
 
     # Time Mode 결정
     if time_range.get("all_time"):
@@ -255,13 +281,7 @@ def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
         time_end = "현재"
     elif time_range.get("inherit"):
         time_mode = "inherit"
-        user_question = state.get("user_question", "")
-        previous_sql = ""
-        if "[Previous Query Context]" in user_question and "```sql" in user_question:
-            import re
-            sql_match = re.search(r'```sql\n(.*?)\n```', user_question, re.DOTALL)
-            if sql_match:
-                previous_sql = sql_match.group(1).strip()
+        previous_sql = _extract_previous_sql_from_messages(state)
         
         p_start, p_end = _extract_time_range_from_sql(previous_sql)
         if p_start and p_end:
@@ -369,9 +389,31 @@ async def parse_request(state: TextToSQLState) -> dict:
             "request_error": "LLM 응답이 JSON 객체(dict) 형식이 아닙니다",
         }
 
-    # 기본값 보정
+    # 기본값 보정 및 이전 맥락 병합 (Context Merging)
+    old_parsed = state.get("parsed_request", {}) or {}
+
+    # 1. Intent는 이번 턴의 판단을 우선
     if not parsed.get("intent"):
         parsed["intent"] = "unknown"
+
+    # 2. Time Range 상속 (새로운 시간 언급이 없으면 이전 시간 유지)
+    new_time = parsed.get("time_range", {})
+    if not new_time or (not new_time.get("start") and not new_time.get("end")):
+        # 새 요청에 시간이 없으면 이전 시간 상속
+        if old_parsed.get("time_range"):
+            parsed["time_range"] = old_parsed.get("time_range")
+            logger.info("TEXT_TO_SQL:parse_request inherited time_range from history")
+
+    # 3. Metric/Condition 상속 (새 요청이 구체적이지 않으면 이전 맥락 유지)
+    # "상위 5개 보여줘" 같은 경우 metric이 비어있을 수 있음 -> 이전 metric 상속
+    if not parsed.get("metric"):
+        if old_parsed.get("metric"):
+            parsed["metric"] = old_parsed.get("metric")
+            logger.info("TEXT_TO_SQL:parse_request inherited metric from history")
+        # 4. 편의 기능: 그래도 없으면 CPU를 기본값으로 (사용자 요청 반영: 융통성)
+        elif "사용률" in state["user_question"] or "상위" in state["user_question"]:
+             # 간단하게 처리 (정교한 건 프롬프트 튜닝 필요하지만 코드 레벨에서 힌트 제공)
+             pass
 
     return {"parsed_request": parsed}
 
@@ -432,11 +474,7 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
     # 후속 질문 처리: 이전 쿼리의 테이블 재사용
     if parsed_request.get("is_followup"):
         previous_sql = ""
-        if "[Previous Query Context]" in user_question and "```sql" in user_question:
-            import re
-            sql_match = re.search(r'```sql\n(.*?)\n```', user_question, re.DOTALL)
-            if sql_match:
-                previous_sql = sql_match.group(1).strip()
+        previous_sql = _extract_previous_sql_from_messages(state)
         
         if previous_sql:
             tables = _extract_tables_from_sql(previous_sql)
@@ -845,13 +883,19 @@ async def generate_report(state: TextToSQLState) -> dict:
         SystemMessage(content=GENERATE_REPORT_SYSTEM),
         HumanMessage(content=GENERATE_REPORT_USER.format(
             user_question=state["user_question"],
+            result_status=state.get("verdict", "OK"),
+            user_constraints=state.get("user_constraints", ""),
             generated_sql=state.get("generated_sql", "생성 실패"),
             sql_result=json.dumps(state.get("sql_result", []), ensure_ascii=False),
-            final_error=state.get("sql_error") or state.get("request_error") or "없음"
+            validation_reason=state.get("validation_reason")
+                or state.get("sql_error")
+                or state.get("request_error")
+                or "없음",
         ))
     ]
 
     response = await llm_fast.ainvoke(messages)
+    answer = response.content
     
     status = "success"
     if state.get("sql_error") or state.get("request_error"):
@@ -860,6 +904,165 @@ async def generate_report(state: TextToSQLState) -> dict:
         status = "fail"
 
     return {
-        "final_answer": response.content,
-        "result_status": status
+        "report": answer,
+        "result_status": status,
+        # AI 응답을 대화 히스토리에 누적
+        "messages": [AIMessage(content=answer)],
+        # 표 출력을 위해 SQL 결과 명시적으로 반환 (상태 유지 보장)
+        "sql_result": state.get("sql_result", []),
+    }
+
+
+# ─────────────────────────────────────────
+# 대화 히스토리 트리밍 유틸리티
+# ─────────────────────────────────────────
+
+MAX_HISTORY_TOKENS = 4000
+"""대화 히스토리 최대 토큰 수. 초과 시 오래된 메시지부터 제거."""
+
+
+def _trim_conversation(state: TextToSQLState) -> list:
+    """State의 messages를 토큰 기준으로 트리밍하여 반환.
+
+    trim_messages가 LLM을 토큰 카운터로 사용하여
+    MAX_HISTORY_TOKENS 이하로 자동으로 줄여줍니다.
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return []
+
+    return trim_messages(
+        messages,
+        max_tokens=MAX_HISTORY_TOKENS,
+        strategy="last",
+        token_counter=llm_fast,
+        allow_partial=False,
+    )
+
+
+# ─────────────────────────────────────────
+# Node 0: classify_intent (의도 분류 — 그래프 진입점)
+# ─────────────────────────────────────────
+
+async def classify_intent(state: TextToSQLState) -> dict:
+    """사용자 질문을 SQL 조회 vs 일반 대화로 분류.
+
+    진입점 노드이므로 사용자 메시지를 messages에 추가하여
+    대화 히스토리를 누적합니다.
+    """
+    logger.info("TEXT_TO_SQL:classify_intent start")
+
+    user_question = state.get("user_question", "")
+    messages = [
+        SystemMessage(content=CLASSIFY_INTENT_SYSTEM),
+        HumanMessage(content=CLASSIFY_INTENT_USER.format(
+            user_question=user_question
+        )),
+    ]
+
+    try:
+        response = await structured_llm_fast.ainvoke(messages)
+        parsed = json.loads(response.content)
+        intent = parsed.get("intent", "sql")
+        reason = parsed.get("reason", "")
+        logger.info("TEXT_TO_SQL:classify_intent result=%s reason=%s", intent, reason)
+    except Exception as e:
+        logger.warning("TEXT_TO_SQL:classify_intent error=%s, defaulting to sql", e)
+        intent = "sql"
+
+    return {
+        "classified_intent": intent,
+        "last_tool_usage": f"질문 유형 판별: {intent}",
+        # 사용자 메시지를 대화 히스토리에 누적
+        "messages": [HumanMessage(content=user_question)],
+    }
+
+
+# ─────────────────────────────────────────
+# Node 0-1: general_chat (일반 대화 응답)
+# ─────────────────────────────────────────
+
+async def general_chat(state: TextToSQLState) -> dict:
+    """일반 대화(인사, 설명 등)에 대한 응답 생성."""
+    logger.info("TEXT_TO_SQL:general_chat start")
+
+    # 트리밍된 대화 히스토리 활용
+    history = _trim_conversation(state)
+    logger.info("TEXT_TO_SQL:general_chat history_len=%d", len(history))
+
+    messages = [
+        SystemMessage(content=GENERAL_CHAT_SYSTEM),
+        *history,
+    ]
+
+    # 마지막 메시지가 현재 질문과 다르면 추가 (중복 방지)
+    current_q = state.get("user_question", "")
+    is_duplicate = False
+    if history:
+        last_msg = history[-1]
+        # 내용이 같거나, 포맷팅된 내용과 유사하면 중복으로 간주
+        if hasattr(last_msg, "content") and (last_msg.content == current_q or current_q in last_msg.content):
+            is_duplicate = True
+
+    if not is_duplicate:
+        messages.append(HumanMessage(content=GENERAL_CHAT_USER.format(
+            user_question=current_q,
+        )))
+
+    response = await llm_fast.ainvoke(messages)
+    answer = response.content
+
+    return {
+        "report": answer,
+        "result_status": "general",
+        "suggested_actions": [],
+        # AI 응답을 대화 히스토리에 누적
+        "messages": [AIMessage(content=answer)],
+    }
+
+
+# ─────────────────────────────────────────
+# Node 2-1: check_clarification (HITL 역질문 판단)
+# ─────────────────────────────────────────
+
+async def check_clarification(state: TextToSQLState) -> dict:
+    """파싱된 요청의 핵심 정보 충분 여부를 LLM으로 판단.
+
+    정보가 부족하면 needs_clarification=True를 반환하여
+    그래프가 END로 분기 → API가 역질문 이벤트를 전송합니다.
+    """
+    logger.info("TEXT_TO_SQL:check_clarification start")
+
+    parsed = state.get("parsed_request", {})
+    messages = [
+        SystemMessage(content=CLARIFICATION_CHECK_SYSTEM),
+        HumanMessage(content=CLARIFICATION_CHECK_USER.format(
+            intent=parsed.get("intent", ""),
+            metric=parsed.get("metric", ""),
+            condition=parsed.get("condition", ""),
+            user_question=state.get("user_question", ""),
+        )),
+    ]
+
+    try:
+        response = await structured_llm_fast.ainvoke(messages)
+        result = json.loads(response.content)
+        needs = result.get("needs_clarification", False)
+        question = result.get("question", "")
+    except Exception as e:
+        logger.warning("TEXT_TO_SQL:check_clarification error=%s, proceeding", e)
+        needs = False
+        question = ""
+
+    if needs:
+        logger.info("TEXT_TO_SQL:check_clarification needs_clarification=True")
+        return {
+            "needs_clarification": True,
+            "clarification_question": question,
+            "last_tool_usage": f"추가 정보 필요: {question}",
+        }
+
+    return {
+        "needs_clarification": False,
+        "clarification_question": "",
     }
