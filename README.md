@@ -114,53 +114,61 @@
 ```mermaid
 graph TD
     %% Entry
-    Start((시작)) --> parse_request["1️⃣ parse_request (구조화)"]
-    
-    %% Input Layer
-    parse_request --> validate_request{"2️⃣ validate_request (검증)"}
-    
-    %% Retrieval Layer
-    validate_request -- "통과" --> retrieve_tables["3️⃣ retrieve_tables (벡터 검색)"]
-    validate_request -- "차단" --> generate_report
-    
-    retrieve_tables --> select_tables{"4️⃣ select_tables (리랭킹)"}
-    
-    %% Generation & Guard Layer
-    select_tables -- "성공" --> generate_sql["5️⃣ generate_sql (SQL 생성)"]
-    select_tables -- "실패" --> generate_report
-    
-    generate_sql --> guard_sql{"6️⃣ guard_sql (보안 검사)"}
-    guard_sql -- "Retry" --> generate_sql
-    guard_sql -- "OK" --> execute_sql["7️⃣ execute_sql (DB 실행)"]
-    
-    %% Execution & Validation Layer
-    execute_sql --> normalize_result["8️⃣ normalize_result (정규화)"]
-    normalize_result --> validate_llm{"9️⃣ validate_llm (결과 검증)"}
-    
-    %% Cyclic Correction
-    validate_llm -- "Retry SQL" --> generate_sql
-    validate_llm -- "OK/Fail" --> generate_report["� generate_report (최종 보고서)"]
-    
-    %% End
-    generate_report --> End((종료))
+    Start((시작)) --> classify_intent{"0. classify_intent (의도 분류)"}
 
-    %% (Tools & Metadata section removed to show only node flow)
+    %% Intent Routing
+    classify_intent -- "general" --> general_chat["1. general_chat (일반 대화)"]
+    classify_intent -- "sql" --> parse_request["2. parse_request (구조화)"]
+    general_chat --> End((종료))
+
+    %% Request Validation + HITL
+    parse_request --> validate_request{"3. validate_request (검증)"}
+    validate_request -- "valid" --> check_clarification{"4. check_clarification (역질문 판단)"}
+    validate_request -- "invalid" --> generate_report["12. generate_report (최종 보고서)"]
+
+    check_clarification -- "clarify" --> End
+    check_clarification -- "proceed" --> retrieve_tables["5. retrieve_tables (벡터 검색)"]
+
+    %% Table Selection
+    retrieve_tables --> select_tables{"6. select_tables (리랭킹)"}
+    select_tables -- "valid" --> generate_sql["7. generate_sql (SQL 생성)"]
+    select_tables -- "invalid" --> generate_report
+
+    %% SQL Guard
+    generate_sql --> guard_sql{"8. guard_sql (보안 검사)"}
+    guard_sql -- "retry" --> generate_sql
+    guard_sql -- "ok" --> execute_sql["9. execute_sql (DB 실행)"]
+    guard_sql -- "fail" --> generate_report
+
+    %% Execution & Validation
+    execute_sql --> normalize_result["10. normalize_result (정규화)"]
+    normalize_result --> validate_llm{"11. validate_llm (결과 검증)"}
+
+    %% Cyclic Correction
+    validate_llm -- "retry_sql" --> generate_sql
+    validate_llm -- "ok/fail" --> generate_report
+
+    %% End
+    generate_report --> End
 ```
 
 ### 📋 노드별 상세 설명 및 도구 호출
 
 | 단계 | 노드명 (Node) | 역할 및 상세 설명 | 사용 도구 / 기술 |
 | :--- | :--- | :--- | :--- |
-| **1** | **`parse_request`** | 사용자 자연어를 분석하여 **의도(Intent), 지표(Metric), 시간 범위** 등을 JSON으로 구조화합니다. | `ChatOpenAI` (JSON Mode) |
-| **2** | **`validate_request`** | 구조화된 요청의 보안성과 논리적 타당성을 검증합니다. (예: 미래 시점 조회 방지, 시각 보정, 시간 모드 처리) | `ParsedRequestGuard` (Middleware) |
-| **3** | **`retrieve_tables`** | 질문과 관련 있는 테이블을 벡터 공간에서 검색하여 후보군을 확보합니다. | **Tool**: `search_tables` (Qdrant) |
-| **4** | **`select_tables`** | 확보된 후보 중 **Top-K(Elbow Cut)**를 적용하여 실제 쿼리에 사용할 테이블을 확정합니다. | `LLM Rerank` |
-| **5** | **`generate_sql`** | 정밀한 테이블 메타데이터를 참조하여 SQL을 생성합니다. 정보 부족 시 스스로 캐시된 테이블을 확장합니다. | **Tool**: `expand_tables` (Internal Cache) |
-| **6** | **`guard_sql`** | 생성된 SQL이 `DROP` 등 파괴적인 명령을 포함하는지, 문법이 맞는지 사전에 검사합니다. | `SqlOutputGuard` (Middleware) |
-| **7** | **`execute_sql`** | 최종 검증된 SQL을 PostgreSQL 데이터베이스에서 실행하여 결과를 가져옵니다. | **Tool**: `execute_sql` (Postgres) |
-| **8** | **`normalize_result`** | 실행 결과 데이터의 가독성을 높이고, 에러 메시지를 기술적으로 정규화합니다. | `Result Normalizer` |
-| **9** | **`validate_llm`** | 실행 결과가 사용자의 질문에 부합하는지 최종 검증합니다. 부족할 경우 **고쳐쓰기(Retry)**를 요청합니다. | **Cyclic**: `Reflection` & `Self-Healing` |
-| **10** | **`generate_report`** | 최종 데이터와 분석 내용을 바탕으로 사용자가 이해하기 쉬운 자연어 리포트를 작성합니다. | `Markdown Report Gen` |
+| **0** | **`classify_intent`** | 질문을 `sql` / `general`로 분류하여 그래프 분기를 결정합니다. | `ChatOpenAI` (JSON Mode) |
+| **1** | **`general_chat`** | `general` 분기에서 일반 대화 응답을 생성하고 종료합니다. | `ChatOpenAI` |
+| **2** | **`parse_request`** | 사용자 자연어를 분석하여 **의도/지표/시간 범위**를 구조화합니다. | `ChatOpenAI` (JSON Mode) |
+| **3** | **`validate_request`** | 파싱 결과의 보안성과 논리 타당성을 검증/보정합니다. | `ParsedRequestGuard` |
+| **4** | **`check_clarification`** | 정보가 부족하면 역질문(HITL)로 분기합니다. | `ChatOpenAI` (JSON Mode) |
+| **5** | **`retrieve_tables`** | 질의와 연관된 테이블 후보를 검색합니다. | **Tool**: `search_tables` (Qdrant) |
+| **6** | **`select_tables`** | 후보를 리랭크해 실제 SQL 컨텍스트 테이블을 확정합니다. | `LLM Rerank` |
+| **7** | **`generate_sql`** | SQL을 생성하고 필요 시 테이블 컨텍스트를 확장합니다. | **Tool**: `expand_tables` (Internal Cache) |
+| **8** | **`guard_sql`** | 생성 SQL의 안전성과 문법을 사전 차단합니다. | `SqlOutputGuard` |
+| **9** | **`execute_sql`** | 검증된 SQL을 DB에서 실행합니다. | **Tool**: `execute_sql` (Postgres) |
+| **10** | **`normalize_result`** | 실행 결과/에러를 정규화하고 재시도 분류 정보를 만듭니다. | `Result Normalizer` |
+| **11** | **`validate_llm`** | 결과 적합성을 검증하고 필요 시 SQL 재생성을 트리거합니다. | `Reflection / Self-Healing` |
+| **12** | **`generate_report`** | 최종 사용자 응답(리포트)을 생성합니다. | `Markdown Report Gen` |
 
 ### 🧠 핵심 기술: 지능형 테이블 캐싱 및 확장
 - **Top-5 Rerank**: 벡터 검색 결과 중 가장 연관성이 높은 5개 테이블을 우선 컨텍스트로 사용합니다.
@@ -188,10 +196,9 @@ server-agent/
 │   ├── agents/              # 지능형 에이전트 핵심 로직
 │   │   ├── text_to_sql/     # Text-to-SQL 워크플로우 (LangGraph)
 │   │   │   ├── graph.py     # 에이전트 상태 전이 및 그래프 구조 정의
-│   │   │   ├── nodes.py     # 분석, 검색, 생성, 검증 등 핵심 노드 구현
+│   │   │   ├── nodes.py     # 분석, 검색, 생성, 검증 노드 단일 모듈
 │   │   │   ├── prompts.py   # 단계별 시스템/사용자 프롬프트 관리
 │   │   │   ├── state.py     # 에이전트 실행 상태(State) 스키마 정의
-│   │   │   ├── chat_context.py # 에이전트용 채팅 맥락(Summary+Recent) 구성 엔진
 │   │   │   ├── table_expand_too.py # 캐시 기반 테이블 정보 확장 도구
 │   │   │   └── middleware/  # 입력/출력 및 요청 검증 가드
 │   │   │       ├── input_guard.py      # 초기 입력 보안/길이 검사

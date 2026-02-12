@@ -1,9 +1,16 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from langchain_core.messages import SystemMessage, HumanMessage
 from src.agents.text_to_sql.nodes import classify_intent
 from src.agents.text_to_sql.state import TextToSQLState
+
+
+def _mock_structured_llm(mock_response: MagicMock) -> MagicMock:
+    """structured_llm_fast 대체용 mock 객체 생성."""
+    fake_llm = MagicMock()
+    fake_llm.ainvoke = AsyncMock(return_value=mock_response)
+    return fake_llm
+
 
 @pytest.mark.asyncio
 async def test_classify_intent_sql_normalization():
@@ -13,10 +20,8 @@ async def test_classify_intent_sql_normalization():
     mock_response = MagicMock()
     mock_response.content = '{"intent": " SQL ", "reason": "test"}'
     
-    # Mock LLM
-    with patch("src.agents.text_to_sql.nodes.structured_llm_fast.ainvoke", new_callable=AsyncMock) as mock_invoke:
-        mock_invoke.return_value = mock_response
-        
+    # RunnableBinding은 속성 직접 patch가 불가하므로 객체 자체를 교체
+    with patch("src.agents.text_to_sql.nodes.structured_llm_fast", _mock_structured_llm(mock_response)):
         state = TextToSQLState(user_question="매출 알려줘")
         result = await classify_intent(state)
         
@@ -30,10 +35,7 @@ async def test_classify_intent_fallback():
     mock_response = MagicMock()
     mock_response.content = '{"intent": "unknown_intent", "reason": "dunno"}'
     
-    # Mock LLM
-    with patch("src.agents.text_to_sql.nodes.structured_llm_fast.ainvoke", new_callable=AsyncMock) as mock_invoke:
-        mock_invoke.return_value = mock_response
-        
+    with patch("src.agents.text_to_sql.nodes.structured_llm_fast", _mock_structured_llm(mock_response)):
         state = TextToSQLState(user_question="이상한 질문")
         result = await classify_intent(state)
         
@@ -47,10 +49,7 @@ async def test_classify_intent_general():
     mock_response = MagicMock()
     mock_response.content = '{"intent": "general", "reason": "greeting"}'
     
-    # Mock LLM
-    with patch("src.agents.text_to_sql.nodes.structured_llm_fast.ainvoke", new_callable=AsyncMock) as mock_invoke:
-        mock_invoke.return_value = mock_response
-        
+    with patch("src.agents.text_to_sql.nodes.structured_llm_fast", _mock_structured_llm(mock_response)):
         state = TextToSQLState(user_question="안녕")
         result = await classify_intent(state)
         

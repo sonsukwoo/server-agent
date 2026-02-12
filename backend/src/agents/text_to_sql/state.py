@@ -28,6 +28,7 @@ class TableCandidate(TypedDict, total=False):
 Verdict = Literal[
     "OK",
     "SQL_BAD",
+    "RETRY_SQL",
     "TABLE_MISSING",
     "DATA_MISSING",
     "COLUMN_MISSING",
@@ -37,6 +38,9 @@ Verdict = Literal[
     "DB_CONN_ERROR",
     "AMBIGUOUS",
 ]
+
+
+IntentType = Literal["sql", "general"]
 
 
 class TextToSQLState(TypedDict, total=False):
@@ -56,7 +60,7 @@ class TextToSQLState(TypedDict, total=False):
     user_constraints: Optional[str]
 
     # 의도 분류
-    classified_intent: str  # "sql" | "general"
+    classified_intent: Optional[IntentType]
 
     # 파싱
     parsed_request: ParsedRequest
@@ -77,7 +81,7 @@ class TextToSQLState(TypedDict, total=False):
     generated_sql: str
     sql_guard_error: str
     sql_result: list[dict]
-    sql_error: str
+    sql_error: Optional[str]
     raw_sql_result: str
 
     # 결과/검증
@@ -93,6 +97,10 @@ class TextToSQLState(TypedDict, total=False):
     table_expand_reason: Optional[str]
 
     # 루프 카운터
+    # - sql_retry_count: SQL 생성/가드/실행 에러 복구 재시도 횟수
+    # - table_expand_count: generate_sql 내 테이블 확장 시도 횟수
+    # - validation_retry_count: validate_llm 단계에서 재생성 요구 횟수
+    # - total_loops: 전체 루프 상한 제어용 통합 카운터
     sql_retry_count: int
     table_expand_count: int
     validation_retry_count: int
@@ -104,3 +112,32 @@ class TextToSQLState(TypedDict, total=False):
     # 보고서
     report: str
     suggested_actions: list[str]
+
+
+def make_initial_state(
+    user_question: str,
+    user_constraints: str = "",
+) -> TextToSQLState:
+    """새 요청 시작 시 공통으로 사용하는 초기 상태 생성."""
+    return {
+        "user_question": user_question,
+        "user_constraints": user_constraints,
+        "classified_intent": None,
+        "request_error": "",
+        "validation_reason": "",
+        "sql_guard_error": "",
+        "sql_error": None,
+        "last_tool_usage": None,
+        "sql_retry_count": 0,
+        "table_expand_count": 0,
+        "validation_retry_count": 0,
+        "total_loops": 0,
+        "verdict": "OK",
+        "result_status": "unknown",
+        "failed_queries": [],
+        "table_expand_attempted": False,
+        "table_expand_failed": False,
+        "table_expand_reason": None,
+        "needs_clarification": False,
+        "clarification_question": "",
+    }

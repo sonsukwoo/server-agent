@@ -2,7 +2,7 @@
 
 from langgraph.graph import StateGraph, END
 
-from .state import TextToSQLState
+from .state import TextToSQLState, make_initial_state
 from .nodes import (
     classify_intent,
     general_chat,
@@ -32,7 +32,7 @@ from src.db.checkpointer import get_checkpointer
 
 def route_by_intent(state: TextToSQLState) -> str:
     """의도 분류 결과에 따른 분기 (sql / general)."""
-    return state.get("classified_intent", "sql")
+    return "general" if state.get("classified_intent") == "general" else "sql"
 
 
 def check_clarification_needed(state: TextToSQLState) -> str:
@@ -214,22 +214,6 @@ app = None
 async def run_text_to_sql(question: str, thread_id: str = "default") -> dict:
     """Text-to-SQL 워크플로우 실행."""
     compiled = await get_compiled_app()
-    initial_state = {
-        "user_question": question,
-        "user_constraints": "",
-        "classified_intent": "",
-        "sql_retry_count": 0,
-        "table_expand_count": 0,
-        "validation_retry_count": 0,
-        "total_loops": 0,
-        "verdict": "OK",
-        "result_status": "unknown",
-        "failed_queries": [],
-        "table_expand_attempted": False,
-        "table_expand_failed": False,
-        "table_expand_reason": None,
-        "needs_clarification": False,
-        "clarification_question": "",
-    }
+    initial_state = make_initial_state(user_question=question)
     config = {"configurable": {"thread_id": thread_id}}
     return await compiled.ainvoke(initial_state, config=config)
