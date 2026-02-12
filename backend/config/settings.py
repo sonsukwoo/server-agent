@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # =================================================================
@@ -61,9 +61,10 @@ class Settings(BaseSettings):
     mcp_postgres_url: str = "http://mcp-postgres:8000"
     mcp_qdrant_url: str = "http://mcp-qdrant:8000"
     
-    class Config:
-        env_file = ".env"        # .env 파일에서 환경변수 로드
-        case_sensitive = False   # 대소문자 구분 안 함
-        extra = "allow"          # .env에 정의되지 않은 추가 변수도 허용
+    model_config = SettingsConfigDict(
+        env_file=".env",       # .env 파일에서 환경변수 로드
+        case_sensitive=False,  # 대소문자 구분 안 함
+        extra="allow",         # .env에 정의되지 않은 추가 변수도 허용
+    )
 
 settings = Settings()

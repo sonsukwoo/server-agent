@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import asyncio
 
-from src.agents.text_to_sql import get_compiled_app
+from src.agents.text_to_sql import get_compiled_app, make_initial_state
 from src.agents.text_to_sql.middleware.input_guard import InputGuard
 
 logger = logging.getLogger("API_QUERY")
@@ -31,7 +31,6 @@ _NODE_MESSAGES = {
     "execute_sql": "데이터베이스 조회 중",
     "normalize_result": "조회 결과 정리 중",
     "validate_llm": "결과 정확성 검증 중",
-    "expand_tables": "테이블 확장 검색 중",
     "generate_report": "최종 보고서 작성 중",
 }
 
@@ -41,14 +40,6 @@ class QueryRequest(BaseModel):
     agent: str
     question: str
     session_id: Optional[str] = None
-
-
-class QueryResponse(BaseModel):
-    """질의 응답 모델."""
-    ok: bool
-    agent: str
-    data: dict | None = None
-    error: str | None = None
 
 
 def _make_sse(event_type: str, **kwargs) -> str:
@@ -87,23 +78,7 @@ async def query(body: QueryRequest):
             return
 
         # Checkpointer가 thread_id 기반으로 대화 맥락을 자동 관리
-        initial_state = {
-            "user_question": question,
-            "user_constraints": "",
-            "classified_intent": "",
-            "sql_retry_count": 0,
-            "table_expand_count": 0,
-            "validation_retry_count": 0,
-            "total_loops": 0,
-            "verdict": "OK",
-            "result_status": "unknown",
-            "failed_queries": [],
-            "table_expand_attempted": False,
-            "table_expand_failed": False,
-            "table_expand_reason": None,
-            "needs_clarification": False,
-            "clarification_question": "",
-        }
+        initial_state = make_initial_state(user_question=question)
         thread_id = session_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
 
