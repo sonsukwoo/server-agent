@@ -805,6 +805,74 @@ body {
   background-color: var(--accent);
 }
 
+/* Mobile Responsiveness Improvements V2 - ChatGPT Style */
+@media (max-width: 640px) {
+
+  /* Global Resets for Mobile */
+  html,
+  body {
+    overflow-x: hidden;
+    width: 100%;
+  }
+
+  #root,
+  .app-container,
+  .main-area {
+    width: 100%;
+    max-width: 100vw;
+  }
+
+  /* Dashboard: Single column for stability on small screens */
+  .dashboard-container {
+    padding: 12px 10px;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .dashboard-card {
+    min-width: 0;
+    padding: 12px;
+    width: 100%;
+  }
+
+  .card-value {
+    font-size: 14px;
+  }
+
+  /* Chat Interface: Maximize width */
+  .chat-content {
+    padding-left: 10px;
+    padding-right: 10px;
+    max-width: 100%;
+  }
+
+  .input-container {
+    padding: 12px 8px;
+    max-width: 100%;
+  }
+
+  .input-wrapper {
+    border-radius: 20px;
+    padding: 8px 12px;
+  }
+
+  .message {
+    padding: 16px 0;
+    gap: 10px;
+  }
+
+  .avatar {
+    width: 28px;
+    height: 28px;
+  }
+
+  .message-content {
+    font-size: 15px;
+    max-width: 100%;
+    word-break: break-word;
+  }
+}
+
 /* Form Styles */
 .form-section {
   background-color: var(--bg-tertiary);
