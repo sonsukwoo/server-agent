@@ -21,6 +21,7 @@ from .nodes import (
 from .common.constants import (
     MAX_SQL_RETRY,
     MAX_TABLE_EXPAND,
+    MAX_VALIDATION_RETRY,
     MAX_TOTAL_LOOPS,
 )
 from src.db.checkpointer import get_checkpointer
@@ -87,6 +88,10 @@ def verdict_route(state: TextToSQLState) -> str:
     if verdict == "RETRY_SQL":
         if state.get("table_expand_count", 0) <= MAX_TABLE_EXPAND:
             return "retry_sql"
+        return "fail"
+    if verdict == "TABLE_MISSING":
+        if state.get("validation_retry_count", 0) <= MAX_VALIDATION_RETRY:
+            return "retry_tables"
         return "fail"
     return "fail"
 
@@ -178,6 +183,7 @@ def build_text_to_sql_graph() -> StateGraph:
         {
             "ok": "generate_report",
             "retry_sql": "generate_sql",
+            "retry_tables": "retrieve_tables",
             "fail": "generate_report",
         },
     )

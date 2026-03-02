@@ -178,11 +178,27 @@ def _extract_tables_from_sql(sql: str) -> list[str]:
 
 
 def _extract_time_range_from_sql(sql: str) -> tuple[str, str]:
-    """SQL에서 ts BETWEEN A AND B 구문을 찾아 A, B 시간값 반환."""
-    pattern = r"ts\s+BETWEEN\s+'([^']+)'\s+AND\s+'([^']+)'"
-    match = re.search(pattern, sql, re.IGNORECASE)
-    if match:
-        return match.group(1), match.group(2)
+    """SQL에서 시간 조건을 찾아 start/end를 추출한다.
+
+    우선순위:
+    1) `ts BETWEEN 'A' AND 'B'`
+    2) `ts >= 'A'` / `ts > 'A'` + `ts <= 'B'` / `ts < 'B'` 조합
+    """
+    between_pattern = r"(?:\w+\.)?ts\s+BETWEEN\s+'([^']+)'\s+AND\s+'([^']+)'"
+    between_match = re.search(between_pattern, sql, re.IGNORECASE)
+    if between_match:
+        return between_match.group(1), between_match.group(2)
+
+    start_pattern = r"(?:\w+\.)?ts\s*(?:>=|>)\s*'([^']+)'"
+    end_pattern = r"(?:\w+\.)?ts\s*(?:<=|<)\s*'([^']+)'"
+    start_match = re.search(start_pattern, sql, re.IGNORECASE)
+    end_match = re.search(end_pattern, sql, re.IGNORECASE)
+
+    if start_match or end_match:
+        start = start_match.group(1) if start_match else ""
+        end = end_match.group(1) if end_match else ""
+        return start, end
+
     return "", ""
 
 
@@ -205,7 +221,11 @@ def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
         inherit_end = ""
     elif time_range.get("inherit"):
         time_mode = "inherit"
-        p_start, p_end = _extract_time_range_from_sql(previous_sql)
+        # 멀티턴 시간 상속은 state(time_range) 값을 우선 사용하고, 없을 때만 SQL 파싱 fallback
+        p_start = time_range.get("start", "")
+        p_end = time_range.get("end", "")
+        if not (p_start and p_end):
+            p_start, p_end = _extract_time_range_from_sql(previous_sql)
         if p_start and p_end:
             time_start = f"{p_start} (상속됨)"
             time_end = f"{p_end} (상속됨)"
@@ -218,8 +238,13 @@ def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
             inherit_end = ""
     else:
         time_mode = "explicit"
-        time_start = time_range.get("start", "N/A")
-        time_end = time_range.get("end", "N/A")
+        time_start = time_range.get("start")
+        time_end = time_range.get("end")
+        if time_range.get("from_beginning") and time_end:
+            time_start = "처음"
+        else:
+            time_start = time_start or ("처음" if time_end else "N/A")
+        time_end = time_end or "현재"
         inherit_start = ""
         inherit_end = ""
 
@@ -288,9 +313,11 @@ def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
         time_end = "현재"
     elif time_range.get("inherit"):
         time_mode = "inherit"
-        previous_sql = _extract_previous_sql_from_messages(state)
-
-        p_start, p_end = _extract_time_range_from_sql(previous_sql)
+        p_start = time_range.get("start", "")
+        p_end = time_range.get("end", "")
+        if not (p_start and p_end):
+            previous_sql = _extract_previous_sql_from_messages(state)
+            p_start, p_end = _extract_time_range_from_sql(previous_sql)
         if p_start and p_end:
             time_start = f"{p_start} (상속됨)"
             time_end = f"{p_end} (상속됨)"
@@ -299,8 +326,13 @@ def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
             time_end = "이전 쿼리 시간 상속"
     else:
         time_mode = "explicit"
-        time_start = time_range.get("start", "N/A")
-        time_end = time_range.get("end", "N/A")
+        time_start = time_range.get("start")
+        time_end = time_range.get("end")
+        if time_range.get("from_beginning") and time_end:
+            time_start = "처음"
+        else:
+            time_start = time_start or ("처음" if time_end else "N/A")
+        time_end = time_end or "현재"
 
     return [
         SystemMessage(content=VALIDATE_RESULT_SYSTEM),

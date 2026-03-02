@@ -1,3 +1,83 @@
+# 🆕 v2.1.3 업데이트: 후속질문 기본 경로 벡터 보강 검색 활성화 (2026-03-03)
+
+후속질문에서 이전 테이블 재사용만 하고 벡터 검색을 건너뛰던 경로를 수정했습니다.
+이제 강제 재검색 플래그가 없어도, 후속질문은 기본적으로 **이전 테이블 + 벡터 후보 보강**을 함께 수행합니다.
+
+## ✅ 반영 내용
+
+- `retrieve_tables` 개선:
+  - 후속질문에서 이전 SQL 테이블을 기반으로 유지하되, Qdrant 검색을 항상 병행
+  - 벡터 검색 결과가 비어도 이전 테이블 후보를 fallback으로 유지
+  - 후속질문 컨텍스트 로그를 `이전 테이블 기반 + 보강 검색 완료` 형태로 명확화
+  - 파일: `backend/src/agents/text_to_sql/nodes.py`
+
+## 🧪 테스트
+
+- 신규 테스트:
+  - 후속질문 기본 경로에서도 벡터 검색이 호출되고 신규 후보(예: `metrics_disk`)가 병합되는지 검증
+- 누적 결과:
+  - `25 passed`
+
+---
+
+# 🆕 v2.1.2 업데이트: 후속질문 `COLUMN_MISSING` 자동 승격 보강 (2026-03-03)
+
+후속질문에서 필요한 지표가 바뀌었을 때(예: RAM 결과 기준으로 CPU 지표 요청) 검증이 `COLUMN_MISSING`으로 떨어지면,
+기존에는 SQL 재생성만 반복되어 테이블 보강 재검색으로 넘어가지 못하는 케이스가 있었습니다.
+
+## ✅ 반영 내용
+
+- `validate_llm` 보강:
+  - `is_followup=true` + `COLUMN_MISSING`이면 `TABLE_MISSING`으로 승격
+  - `force_table_search=true`를 설정해 `retrieve_tables` 재검색 경로로 유도
+  - 파일: `backend/src/agents/text_to_sql/nodes.py`
+- `retrieve_tables` 보강:
+  - `force_table_search=true`일 때 벡터 검색 `top_k`를 확대
+  - 파싱된 `metric/condition` 힌트를 검색 쿼리에 추가해 관련 테이블 탐색 정확도 개선
+  - 파일: `backend/src/agents/text_to_sql/nodes.py`
+
+## 🧪 테스트
+
+- 신규 테스트:
+  - 후속질문 `COLUMN_MISSING` -> `TABLE_MISSING` 승격 및 재검색 플래그 설정 검증
+  - 강제 재검색 시 `top_k` 확대 + metric 힌트 주입 검증
+- 누적 결과:
+  - `24 passed`
+
+---
+
+# 🆕 v2.1.1 업데이트: 후속질문 테이블 보강/시간 상속 안정화 (2026-03-03)
+
+이번 반영은 후속질문에서 `TABLE_MISSING`이 발생할 때 테이블 보강이 실제로 재시도되도록 그래프 라우팅과 검색 로직을 정리한 수정입니다.
+
+## ✅ 반영 내용
+
+- `TABLE_MISSING` 판정 시 `generate_sql` 재시도가 아니라 `retrieve_tables`로 재진입하도록 라우팅 추가
+  - 파일: `backend/src/agents/text_to_sql/graph.py`
+- `validate_llm`에서 `TABLE_MISSING` 발생 시 `force_table_search=True`를 설정해 다음 턴 검색을 강제
+  - 파일: `backend/src/agents/text_to_sql/nodes.py`
+- `retrieve_tables`에서 강제 재검색 시:
+  - 이전 SQL 테이블 + Qdrant 후보를 병합(중복 제거)
+  - 이후 `select_tables`에서 재선정 가능하도록 후보군 확장
+  - 파일: `backend/src/agents/text_to_sql/nodes.py`
+- 시간 상속 fallback 보강:
+  - `ts BETWEEN` 외 `ts >=`, `ts <=` 형태도 시간 범위 추출 가능
+  - 파일: `backend/src/agents/text_to_sql/common/helpers.py`
+- follow-up 프롬프트 문구 정리:
+  - "무조건 이전 테이블만 사용" 제약 완화, 필요 시 테이블 보강 허용 명시
+  - 파일: `backend/src/agents/text_to_sql/prompts.py`
+
+## 🧪 테스트
+
+- 추가 테스트:
+  - `TABLE_MISSING` 라우팅 분기 테스트
+  - follow-up 강제 재검색 시 이전/신규 테이블 병합 테스트
+  - 비교 연산자 기반 시간 범위 추출 테스트
+- 실행 결과:
+  - `23 passed`
+
+---
+
 # 🆕 v2.1 업데이트: LangChain Structured Outputs 전환 (2026-03-02)
 
 이번 업데이트는 OpenAI JSON 모드 + 수동 파싱(`json.loads`) 기반 흐름을 제거하고,  

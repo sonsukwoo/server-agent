@@ -1,14 +1,18 @@
 """PostgreSQL MCP 서버 - execute_sql 전용"""
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 import json
-import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 from contextlib import contextmanager
-import os
-from typing import Any, Iterable, Generator
 import logging
+from typing import Any, Generator
+import os
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
 
 app = Server("postgres-tools")
 logger = logging.getLogger("uvicorn.error")
@@ -91,35 +95,38 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "query": {"type": "string", "description": "실행할 SQL 쿼리"}
                 },
-                "required": ["query"]
-            }
+                "required": ["query"],
+            },
         ),
     ]
+
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Tool 실행"""
-    
+
     if name == "execute_sql":
         query = arguments.get("query", "")
         # [SECURITY] Bypass Option for Internal Scripts
         # 일반 LLM 호출은 False(기본값)이므로 SELECT만 가능
         # 백엔드 스크립트(core.py)에서만 True로 호출하여 INSERT/DELETE 수행
         bypass_validation = arguments.get("bypass_validation", False)
-        
+
         if not query:
             return _error("오류: query를 입력해주세요")
-        
+
         # 1. 일반 모드: SELECT만 허용
         if not bypass_validation:
             if not _is_select_query(query):
                 return _error("오류: SELECT 쿼리만 실행 가능합니다")
-        
+
         # 2. 실행 (Bypass 모드이거나 SELECT 쿼리인 경우)
         try:
             import asyncio
+
             # Bypass 모드(INSERT/DELETE 등)는 결과를 반환하지 않을 수 있으므로 분기 처리
             if bypass_validation:
+
                 def _run_bypass():
                     with _with_conn() as conn:
                         conn.autocommit = True
@@ -129,7 +136,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                             return "Command Executed Successfully"
                         finally:
                             cursor.close()
-                
+
                 msg = await asyncio.to_thread(_run_bypass)
                 return [TextContent(type="text", text=msg)]
 
@@ -137,20 +144,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 # 일반 SELECT (JSON 결과 반환) - 별도 스레드에서 실행하여 블로킹 방지
                 result_json = await asyncio.to_thread(_execute_select, query)
                 return [TextContent(type="text", text=result_json)]
-                
+
         except Exception as e:
             return _error(f"오류: {str(e)}")
-    
+
     else:
         return _error("알 수 없는 Tool입니다")
 
-# HTTP Adapter
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import uvicorn
-import os
 
+# HTTP Adapter
 http_app = FastAPI()
+
 
 @http_app.on_event("shutdown")
 async def _close_pool():
@@ -159,14 +163,20 @@ async def _close_pool():
         _pool.closeall()
         _pool = None
 
+
 @http_app.get("/tools")
 async def handle_list_tools():
     tools = await list_tools()
-    return [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in tools]
+    return [
+        {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+        for t in tools
+    ]
+
 
 class CallToolRequest(BaseModel):
     name: str
     arguments: dict = {}
+
 
 @http_app.post("/call")
 async def handle_call_tool(req: CallToolRequest):
@@ -176,15 +186,17 @@ async def handle_call_tool(req: CallToolRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 async def main():
     """MCP 서버 실행 (stdio)"""
     async with stdio_server() as (read, write):
         await app.run(read, write, app.create_initialization_options())
 
+
 if __name__ == "__main__":
     import asyncio
     import sys
-    
+
     # "http" 인자가 있으면 uvicorn 실행 (개발/테스트용)
     if len(sys.argv) > 1 and sys.argv[1] == "http":
         port = int(os.getenv("PORT", 8000))

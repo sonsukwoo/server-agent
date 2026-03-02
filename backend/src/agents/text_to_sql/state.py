@@ -10,7 +10,7 @@ class ParsedRequest(TypedDict, total=False):
     """구조화된 요구사항"""
     intent: str
     is_followup: bool
-    time_range: dict  # {"start": str, "end": str, "timezone": str, "all_time": bool, "inherit": bool}
+    time_range: dict  # {"start": str|None, "end": str, "timezone": str, "all_time": bool, "inherit": bool, "from_beginning": bool}
     metric: Optional[str]
     condition: Optional[str]
     output: Optional[str]
@@ -77,6 +77,7 @@ class TextToSQLState(TypedDict, total=False):
     selected_tables: list[str]
     table_context: str
     candidate_offset: int
+    force_table_search: bool
 
     # SQL 생성/실행
     generated_sql: str
@@ -138,6 +139,7 @@ def make_initial_state(
         "table_expand_attempted": False,
         "table_expand_failed": False,
         "table_expand_reason": None,
+        "force_table_search": False,
         "needs_clarification": False,
         "clarification_question": "",
     }

@@ -1,9 +1,10 @@
-"""Qdrant MCP 서버 - 검색 + 임베딩 통합"""
 import os
 import json
 import uuid
+import sys
+import asyncio
+import logging
 from urllib import request
-from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -11,8 +12,9 @@ from mcp.types import Tool, TextContent
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
 from langchain_openai import OpenAIEmbeddings
-
-import logging
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("QDRANT_MCP")
@@ -70,7 +72,11 @@ def _ensure_collection(vector_size: int = 1536):
             collection_name=QDRANT_COLLECTION,
             vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
         )
-        logger.info("ensure_collection: created collection=%s size=%s", QDRANT_COLLECTION, vector_size)
+        logger.info(
+            "ensure_collection: created collection=%s size=%s",
+            QDRANT_COLLECTION,
+            vector_size,
+        )
         return f"컬렉션 '{QDRANT_COLLECTION}' 생성 완료"
     logger.info("ensure_collection: exists collection=%s", QDRANT_COLLECTION)
     return f"컬렉션 '{QDRANT_COLLECTION}' 이미 존재"
@@ -88,11 +94,13 @@ def _search_qdrant(query: str, top_k: int) -> list[dict]:
         )
     else:
         url = f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/search"
-        payload = json.dumps({
-            "vector": query_vector,
-            "limit": top_k,
-            "with_payload": True,
-        }).encode("utf-8")
+        payload = json.dumps(
+            {
+                "vector": query_vector,
+                "limit": top_k,
+                "with_payload": True,
+            }
+        ).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if QDRANT_API_KEY:
             headers["api-key"] = QDRANT_API_KEY
@@ -103,7 +111,11 @@ def _search_qdrant(query: str, top_k: int) -> list[dict]:
 
     candidates = []
     for hit in results:
-        payload = getattr(hit, "payload", None) or (hit.get("payload", {}) if isinstance(hit, dict) else {}) or {}
+        payload = (
+            getattr(hit, "payload", None)
+            or (hit.get("payload", {}) if isinstance(hit, dict) else {})
+            or {}
+        )
         score = getattr(hit, "score", None)
         if score is None and isinstance(hit, dict):
             score = hit.get("score")
@@ -125,19 +137,21 @@ def _search_qdrant(query: str, top_k: int) -> list[dict]:
             if col.get("visible_to_llm") is True
         ]
 
-        candidates.append({
-            "table_name": full_name,
-            "description": payload.get("description", ""),
-            "primary_time_col": payload.get("primary_time_col", ""),
-            "join_keys": payload.get("join_keys", []),
-            "columns": columns,
-            "score": round(score or 0.0, 4),
-        })
+        candidates.append(
+            {
+                "table_name": full_name,
+                "description": payload.get("description", ""),
+                "primary_time_col": payload.get("primary_time_col", ""),
+                "join_keys": payload.get("join_keys", []),
+                "columns": columns,
+                "score": round(score or 0.0, 4),
+            }
+        )
 
-    logger.info("search_qdrant: query='%s' top_k=%s results=%s", query, top_k, len(candidates))
+    logger.info(
+        "search_qdrant: query='%s' top_k=%s results=%s", query, top_k, len(candidates)
+    )
     return candidates
-
-
 
 
 def _upsert_schema(docs: list[dict]):
@@ -155,7 +169,9 @@ def _upsert_schema(docs: list[dict]):
             f"Columns:\n{columns_text}"
         )
 
-    logger.info("upsert_schema: embedding docs=%s model=%s", len(texts), EMBEDDING_MODEL)
+    logger.info(
+        "upsert_schema: embedding docs=%s model=%s", len(texts), EMBEDDING_MODEL
+    )
     vectors = embeddings.embed_documents(texts)
 
     points = []
@@ -186,7 +202,11 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "사용자 질문"},
-                    "top_k": {"type": "integer", "description": "검색할 후보 수", "default": 5},
+                    "top_k": {
+                        "type": "integer",
+                        "description": "검색할 후보 수",
+                        "default": 5,
+                    },
                 },
                 "required": ["query"],
             },
@@ -196,9 +216,7 @@ async def list_tools() -> list[Tool]:
             description="Qdrant 컬렉션 확인 및 생성",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "vector_size": {"type": "integer", "default": 1536}
-                },
+                "properties": {"vector_size": {"type": "integer", "default": 1536}},
             },
         ),
         Tool(
@@ -221,7 +239,6 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    import asyncio
     if name == "search_tables":
         query = arguments.get("query", "")
         top_k = arguments.get("top_k", 5)
@@ -229,7 +246,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return _error("오류: query가 비어있습니다")
         try:
             candidates = await asyncio.to_thread(_search_qdrant, query, top_k)
-            return [TextContent(type="text", text=json.dumps(candidates, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text", text=json.dumps(candidates, ensure_ascii=False)
+                )
+            ]
         except Exception as e:
             return _error(f"검색 실패: {str(e)}")
 
@@ -251,22 +272,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         except Exception as e:
             return _error(f"업서트 실패: {e}")
 
-
     return _error(f"알 수 없는 도구: {name}")
 
 
 # HTTP Adapter
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import uvicorn
-
 http_app = FastAPI()
 
 
 @http_app.get("/tools")
 async def handle_list_tools():
     tools = await list_tools()
-    return [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in tools]
+    return [
+        {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+        for t in tools
+    ]
 
 
 class CallToolRequest(BaseModel):
@@ -289,9 +308,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    import asyncio
-    import sys
-
     if len(sys.argv) > 1 and sys.argv[1] == "http":
         port = int(os.getenv("PORT", 8000))
         uvicorn.run(http_app, host="0.0.0.0", port=port)

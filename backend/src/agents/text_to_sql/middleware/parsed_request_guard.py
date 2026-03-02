@@ -37,6 +37,13 @@ class ParsedRequestGuard:
         # 2. Time Range 처리 (Null이면 기본값, 아니면 검증)
         time_range = parsed.get("time_range")
         is_followup = parsed.get("is_followup", False)
+
+        # all_time은 후속질문이어도 상속보다 우선한다.
+        if isinstance(time_range, dict) and time_range.get("all_time") is True:
+            if not time_range.get("timezone"):
+                time_range["timezone"] = settings.tz
+            parsed["time_range"] = time_range
+            return True, "", parsed, None
         
         if (not time_range) or (
             isinstance(time_range, dict)
@@ -62,9 +69,36 @@ class ParsedRequestGuard:
             
             start_str = time_range.get("start")
             end_str = time_range.get("end")
-            
-            if not start_str or not end_str:
-                return False, "time_range must have 'start' and 'end' fields", parsed, None
+
+            # start만 있는 경우: end를 현재 시각으로 자동 보정
+            if start_str and not end_str:
+                now = get_now().isoformat()
+                parsed["time_range"]["end"] = now
+                end_str = now
+                adjustment_info = "종료 시각이 없어 현재 시각으로 자동 보정했습니다."
+                logger.info("ParsedRequestGuard: end missing, auto-filled end=%s", now)
+
+            # end만 있는 경우: 시작 하한 없이 '처음부터 end까지' 조회
+            elif end_str and not start_str:
+                is_valid_end, end_error, adjusted_end = ParsedRequestGuard._validate_end_only_value(end_str)
+                if not is_valid_end:
+                    return False, end_error, parsed, None
+
+                if adjusted_end:
+                    parsed["time_range"]["end"] = adjusted_end.isoformat()
+                    adjustment_info = f"미래 종료 시각({end_str})이 포함되어 현재 시각으로 조정했습니다."
+
+                parsed["time_range"]["start"] = None
+                parsed["time_range"]["from_beginning"] = True
+                if not adjustment_info:
+                    adjustment_info = "시작 시각이 없어 처음부터 종료 시각까지 조회하도록 보정했습니다."
+                logger.info("ParsedRequestGuard: start missing, using from_beginning mode")
+                if not time_range.get("timezone"):
+                    time_range["timezone"] = settings.tz
+                return True, "", parsed, adjustment_info
+
+            elif not start_str and not end_str:
+                return False, "time_range must have 'start' or 'end' fields", parsed, None
 
             # 타임존 보정 (settings.tz 사용)
             if not time_range.get("timezone"):
@@ -141,3 +175,22 @@ class ParsedRequestGuard:
 
         except ValueError as e:
             return False, f"Invalid time format: {str(e)}", None
+
+    @staticmethod
+    def _validate_end_only_value(end_str: str) -> Tuple[bool, str, Any]:
+        """end 단일 값의 유효성 검증 (미래 시각은 현재 시각으로 보정)."""
+        try:
+            e = str(end_str).replace("Z", "+00:00")
+            end_dt = datetime.fromisoformat(e)
+            now = get_now()
+
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=now.tzinfo)
+
+            future_limit = now + timedelta(minutes=FUTURE_TOLERANCE_MINUTES)
+            if end_dt > future_limit:
+                return True, "", now
+            return True, "", None
+
+        except ValueError as e:
+            return False, f"Invalid end time format: {str(e)}", None

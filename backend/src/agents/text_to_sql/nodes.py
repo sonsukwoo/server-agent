@@ -159,18 +159,24 @@ async def parse_request(state: TextToSQLState) -> dict:
         }
 
     old_parsed = state.get("parsed_request", {}) or {}
-
     if not parsed.get("intent"):
         parsed["intent"] = "unknown"
 
     new_time = parsed.get("time_range", {})
+    old_time = old_parsed.get("time_range", {}) or {}
     is_all_time = new_time.get("all_time") if new_time else False
 
     if is_all_time:
         logger.info("TEXT_TO_SQL:parse_request all_time=True detected. Skipping inheritance.")
+    elif new_time and new_time.get("end") and not new_time.get("start"):
+        # 후속질문에서 end만 주어진 경우, 이전 start를 상속해 범위를 보존
+        if parsed.get("is_followup") and old_time.get("start"):
+            parsed["time_range"]["start"] = old_time.get("start")
+            parsed["time_range"]["inherit"] = True
+            logger.info("TEXT_TO_SQL:parse_request inherited start from history for end-only followup")
     elif not new_time or (not new_time.get("start") and not new_time.get("end")):
-        if old_parsed.get("time_range"):
-            parsed["time_range"] = old_parsed.get("time_range")
+        if old_time:
+            parsed["time_range"] = old_time
             logger.info("TEXT_TO_SQL:parse_request inherited time_range from history")
 
     if not parsed.get("metric"):
@@ -284,30 +290,38 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
     """테이블 검색: 후속 질문 확인 또는 Qdrant 벡터 검색."""
     user_question = state["user_question"]
     parsed_request = state.get("parsed_request", {})
+    is_followup = parsed_request.get("is_followup")
+    force_table_search = state.get("force_table_search", False)
+    previous_sql_tables: list[str] = []
+    search_query = user_question
+    search_top_k = RETRIEVE_K * 2 if force_table_search else RETRIEVE_K
 
-    if parsed_request.get("is_followup"):
+    hint_parts = []
+    metric_hint = parsed_request.get("metric")
+    condition_hint = parsed_request.get("condition")
+    if metric_hint:
+        hint_parts.append(f"metric:{metric_hint}")
+    if condition_hint:
+        hint_parts.append(f"condition:{condition_hint}")
+    if hint_parts:
+        search_query = f"{user_question}\n{' '.join(hint_parts)}"
+
+    if is_followup:
         previous_sql = _extract_previous_sql_from_messages(state)
-
         if previous_sql:
-            tables = _extract_tables_from_sql(previous_sql)
-            if tables:
-                logger.info("TEXT_TO_SQL:retrieve_tables skipped (followup)")
-                candidates = [{"table_name": t, "score": 1.0} for t in tables]
-                return {
-                    "table_candidates": candidates,
-                    "selected_tables": tables,
-                    "candidate_offset": len(tables),
-                    "last_tool_usage": (
-                        f"후속 질문: 이전 쿼리에 사용된 테이블 재사용 ({', '.join(tables)})"
-                    ),
-                }
+            previous_sql_tables = _extract_tables_from_sql(previous_sql)
+            if previous_sql_tables:
+                logger.info(
+                    "TEXT_TO_SQL:retrieve_tables followup base tables detected (%s)",
+                    ", ".join(previous_sql_tables),
+                )
 
     candidates = []
     try:
         async with qdrant_search_client() as client:
             result_json = await client.call_tool("search_tables", {
-                "query": user_question,
-                "top_k": RETRIEVE_K,
+                "query": search_query,
+                "top_k": search_top_k,
             })
             if result_json:
                 try:
@@ -328,20 +342,68 @@ async def retrieve_tables(state: TextToSQLState) -> dict:
         if base.startswith("v_"):
             continue
         filtered.append(c)
+    vector_filtered_count = len(filtered)
+
+    if previous_sql_tables:
+        existing = {c.get("table_name"): c for c in filtered if c.get("table_name")}
+        merged = []
+        for table_name in previous_sql_tables:
+            candidate = existing.pop(table_name, None)
+            if candidate is None:
+                candidate = {"table_name": table_name, "score": 1.0}
+            merged.append(candidate)
+        merged.extend(existing.values())
+        filtered = merged
 
     if not filtered:
+        if previous_sql_tables:
+            # 벡터 검색이 비었더라도 후속질문의 기본 컨텍스트는 유지한다.
+            fallback_candidates = [{"table_name": t, "score": 1.0} for t in previous_sql_tables]
+            return {
+                "table_candidates": fallback_candidates,
+                "selected_tables": previous_sql_tables,
+                "candidate_offset": len(previous_sql_tables),
+                "force_table_search": False,
+                "last_tool_usage": (
+                    "후속 질문: 벡터 보강 후보 없음, 이전 쿼리 테이블 유지 "
+                    f"({', '.join(previous_sql_tables)})"
+                ),
+            }
         return {
             "table_candidates": [],
             "selected_tables": [],
             "table_context": "",
             "request_error": "관련 테이블을 찾지 못했습니다",
+            "force_table_search": False,
             "last_tool_usage": "검색 결과: 관련 테이블 없음",
         }
+
+    if is_followup and force_table_search:
+        previous_set = set(previous_sql_tables)
+        new_only_count = len(
+            [c for c in filtered if c.get("table_name") and c.get("table_name") not in previous_set]
+        )
+        usage = (
+            "후속 질문: 테이블 보강 재검색 완료 "
+            f"(기존 {len(previous_sql_tables)} + 신규 {new_only_count}, 벡터 검색 {vector_filtered_count})"
+        )
+    elif is_followup and previous_sql_tables:
+        previous_set = set(previous_sql_tables)
+        new_only_count = len(
+            [c for c in filtered if c.get("table_name") and c.get("table_name") not in previous_set]
+        )
+        usage = (
+            "후속 질문: 이전 테이블 기반 + 보강 검색 완료 "
+            f"(기존 {len(previous_sql_tables)} + 신규 {new_only_count}, 벡터 검색 {vector_filtered_count})"
+        )
+    else:
+        usage = f"벡터 검색 완료: {len(filtered)}개의 후보 테이블 확보"
 
     return {
         "table_candidates": filtered,
         "candidate_offset": 0,
-        "last_tool_usage": f"벡터 검색 완료: {len(filtered)}개의 후보 테이블 확보",
+        "force_table_search": False,
+        "last_tool_usage": usage,
     }
 
 
@@ -662,6 +724,7 @@ async def validate_llm(state: TextToSQLState) -> dict:
     unnecessary_tables = parsed.unnecessary_tables
 
     if verdict != "OK":
+        is_followup = bool(state.get("parsed_request", {}).get("is_followup"))
         state_update = {
             "verdict": verdict,
             "validation_reason": _format_failed_feedback(reason, hint),
@@ -670,6 +733,20 @@ async def validate_llm(state: TextToSQLState) -> dict:
             "total_loops": state.get("total_loops", 0) + 1,
             "last_tool_usage": f"결과 검증 재시도 필요: {verdict}",
         }
+
+        if verdict == "TABLE_MISSING":
+            state_update["force_table_search"] = True
+            state_update["last_tool_usage"] = "결과 검증 재시도 필요: TABLE_MISSING (테이블 재검색)"
+        elif verdict == "COLUMN_MISSING" and is_followup and not state.get("force_table_search", False):
+            # 후속질문에서 컬럼 누락은 필요한 테이블 미포함으로 이어지는 경우가 많아,
+            # SQL 재생성보다 테이블 보강 재검색을 우선 시도한다.
+            state_update["verdict"] = "TABLE_MISSING"
+            state_update["force_table_search"] = True
+            state_update["last_tool_usage"] = "결과 검증 재시도 필요: COLUMN_MISSING (테이블 재검색)"
+            state_update["validation_reason"] = _format_failed_feedback(
+                f"{reason}\n(자동 보정: 후속질문 컬럼 누락으로 테이블 보강 재검색을 먼저 수행합니다.)",
+                hint,
+            )
 
         table_retry = _handle_unnecessary_tables(
             state,

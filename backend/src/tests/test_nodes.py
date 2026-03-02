@@ -9,9 +9,13 @@ from src.agents.text_to_sql.nodes import (
     _handle_unnecessary_tables,
     normalize_result,
     parse_request,
+    retrieve_tables,
     validate_llm,
 )
+from src.agents.text_to_sql.graph import verdict_route
+from src.agents.text_to_sql.common.helpers import _extract_time_range_from_sql
 from src.agents.text_to_sql.state import TextToSQLState, make_initial_state
+from src.agents.text_to_sql.middleware.parsed_request_guard import ParsedRequestGuard
 from src.agents.text_to_sql.schemas import (
     ClarificationCheck,
     GenerateSqlResult,
@@ -97,6 +101,81 @@ async def test_time_inheritance_normal():
         
         # 상속되었어야 함
         assert parsed["time_range"] == old_parsed["time_range"]
+
+
+@pytest.mark.asyncio
+async def test_time_inheritance_followup_end_only_inherits_start():
+    """후속 질문에서 end만 있으면 이전 start를 상속하는지 테스트."""
+    mock_response = ParsedRequestModel(
+        intent="sql",
+        is_followup=True,
+        time_range=TimeRangeModel(end="2025-01-20T00:00:00+09:00"),
+    )
+
+    old_parsed = {
+        "time_range": {
+            "start": "2025-01-01T00:00:00+09:00",
+            "end": "2025-01-31T23:59:59+09:00",
+            "timezone": "Asia/Seoul",
+        }
+    }
+    state = TextToSQLState(
+        user_question="그 결과에서 1월 20일까지로 좁혀줘",
+        parsed_request=old_parsed,
+    )
+
+    with patch("src.agents.text_to_sql.nodes.parse_request_llm", _mock_structured_llm(mock_response)):
+        result = await parse_request(state)
+        parsed = result["parsed_request"]
+
+        assert parsed["time_range"]["start"] == old_parsed["time_range"]["start"]
+        assert parsed["time_range"]["end"] == "2025-01-20T00:00:00+09:00"
+        assert parsed["time_range"]["inherit"] is True
+
+
+def test_parsed_request_guard_start_only_autofills_end():
+    """start만 있으면 end를 현재 시각으로 자동 보정하는지 테스트."""
+    parsed = {
+        "intent": "cpu_usage",
+        "time_range": {"start": "2025-01-01T00:00:00+09:00"},
+    }
+
+    is_valid, error, normalized, adjustment = ParsedRequestGuard.validate(parsed)
+    assert is_valid is True
+    assert error == ""
+    assert normalized["time_range"].get("end")
+    assert "종료 시각이 없어 현재 시각으로 자동 보정" in (adjustment or "")
+
+
+def test_parsed_request_guard_end_only_marks_from_beginning():
+    """end만 있으면 처음부터 종료 시각까지로 보정되는지 테스트."""
+    parsed = {
+        "intent": "cpu_usage",
+        "time_range": {"end": "2025-01-31T23:59:59+09:00"},
+    }
+
+    is_valid, error, normalized, adjustment = ParsedRequestGuard.validate(parsed)
+    assert is_valid is True
+    assert error == ""
+    assert normalized["time_range"]["from_beginning"] is True
+    assert normalized["time_range"].get("end") == "2025-01-31T23:59:59+09:00"
+    assert normalized["time_range"].get("start") is None
+    assert "처음부터 종료 시각까지" in (adjustment or "")
+
+
+def test_parsed_request_guard_followup_all_time_is_not_overwritten():
+    """followup + all_time 조합에서 inherit로 덮어쓰지 않는지 테스트."""
+    parsed = {
+        "intent": "cpu_usage",
+        "is_followup": True,
+        "time_range": {"all_time": True},
+    }
+
+    is_valid, error, normalized, _ = ParsedRequestGuard.validate(parsed)
+    assert is_valid is True
+    assert error == ""
+    assert normalized["time_range"].get("all_time") is True
+    assert normalized["time_range"].get("inherit") is None
 
 
 def test_handle_unnecessary_tables_rebuilds_string_context():
@@ -278,3 +357,147 @@ def test_make_initial_state_contract_keys():
     assert state["sql_guard_error"] == ""
     assert state["sql_error"] is None
     assert state["last_tool_usage"] is None
+
+
+def test_extract_time_range_from_sql_comparison_operators():
+    """BETWEEN 외 비교식 시간 조건에서도 start/end를 추출하는지 테스트."""
+    sql = (
+        "SELECT * FROM ops_metrics.metrics_memory m "
+        "WHERE m.ts >= '2026-02-24T13:00:00+09:00' "
+        "AND m.ts <= '2026-02-24T15:00:00+09:00'"
+    )
+    start, end = _extract_time_range_from_sql(sql)
+    assert start == "2026-02-24T13:00:00+09:00"
+    assert end == "2026-02-24T15:00:00+09:00"
+
+
+def test_verdict_route_table_missing_retries_table_search():
+    """TABLE_MISSING이면 generate_sql 재시도가 아니라 retrieve_tables로 분기하는지 테스트."""
+    route = verdict_route(
+        TextToSQLState(
+            verdict="TABLE_MISSING",
+            validation_retry_count=1,
+            total_loops=0,
+        )
+    )
+    assert route == "retry_tables"
+
+
+@pytest.mark.asyncio
+async def test_retrieve_tables_followup_force_search_merges_previous_tables():
+    """TABLE_MISSING 이후 followup 강제 재검색 시 이전 테이블과 신규 후보를 합치는지 테스트."""
+
+    class _FakeQdrantClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def call_tool(self, tool_name, payload):
+            assert tool_name == "search_tables"
+            assert payload["top_k"] > 8
+            assert "metric:cpu_usage" in payload["query"]
+            return (
+                '[{"table_name":"ops_metrics.docker_metrics","score":0.93,'
+                '"columns":[{"name":"ts","type":"timestamptz","description":"time"}]}]'
+            )
+
+    state = TextToSQLState(
+        user_question="마지막 결과에서 컨테이너 현황도 같이 보여줘",
+        parsed_request={"is_followup": True, "metric": "cpu_usage"},
+        force_table_search=True,
+        messages=[
+            AIMessage(
+                content=(
+                    "```sql\nSELECT * FROM ops_metrics.metrics_memory "
+                    "WHERE ts >='2026-02-24T13:00:00+09:00'\n```"
+                )
+            )
+        ],
+    )
+
+    with patch("src.agents.text_to_sql.nodes.qdrant_search_client", return_value=_FakeQdrantClient()):
+        result = await retrieve_tables(state)
+
+    table_names = [c["table_name"] for c in result["table_candidates"]]
+    assert "ops_metrics.metrics_memory" in table_names
+    assert "ops_metrics.docker_metrics" in table_names
+    assert result["force_table_search"] is False
+
+
+@pytest.mark.asyncio
+async def test_retrieve_tables_followup_default_also_runs_vector_search():
+    """후속 질문 기본 경로에서도 벡터 검색을 수행해 신규 후보를 보강하는지 테스트."""
+
+    class _FakeQdrantClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def call_tool(self, tool_name, payload):
+            assert tool_name == "search_tables"
+            assert payload["top_k"] == 8
+            return (
+                '[{"table_name":"ops_metrics.metrics_disk","score":0.77,'
+                '"columns":[{"name":"ts","type":"timestamptz","description":"time"}]}]'
+            )
+
+    state = TextToSQLState(
+        user_question="현재 나온 결과에서 최고 램 시점의 디스크 현황",
+        parsed_request={"is_followup": True},
+        force_table_search=False,
+        messages=[
+            AIMessage(
+                content=(
+                    "```sql\nSELECT * FROM ops_metrics.metrics_memory "
+                    "JOIN ops_metrics.metrics_cpu ON metrics_cpu.ts = metrics_memory.ts\n```"
+                )
+            )
+        ],
+    )
+
+    with patch("src.agents.text_to_sql.nodes.qdrant_search_client", return_value=_FakeQdrantClient()):
+        result = await retrieve_tables(state)
+
+    table_names = [c["table_name"] for c in result["table_candidates"]]
+    assert "ops_metrics.metrics_memory" in table_names
+    assert "ops_metrics.metrics_cpu" in table_names
+    assert "ops_metrics.metrics_disk" in table_names
+    assert "이전 테이블 기반 + 보강 검색 완료" in result["last_tool_usage"]
+
+
+@pytest.mark.asyncio
+async def test_validate_llm_column_missing_followup_promotes_table_search():
+    """후속 질문에서 COLUMN_MISSING이면 테이블 재검색 경로로 승격되는지 테스트."""
+    mock_response = ValidationResult(
+        verdict=ValidationVerdict.COLUMN_MISSING,
+        reason="cpu 관련 컬럼이 현재 컨텍스트에 없습니다.",
+        hint="ops_metrics.metrics_cpu를 포함하세요.",
+        unnecessary_tables=[],
+    )
+    fake_llm = _mock_structured_llm(mock_response)
+
+    state = TextToSQLState(
+        sql_error=None,
+        generated_sql="SELECT memory_usage_percent FROM ops_metrics.metrics_memory",
+        sql_retry_count=0,
+        validation_retry_count=0,
+        total_loops=0,
+        parsed_request={"is_followup": True, "time_range": {"all_time": True}},
+        user_question="마지막 결과에서 최고 RAM 시점의 cpu 사용량",
+        user_constraints="",
+        table_context="테이블: ops_metrics.metrics_memory",
+        sql_result=[{"memory_usage_percent": 71.84}],
+        failed_queries=[],
+        force_table_search=False,
+    )
+
+    with patch("src.agents.text_to_sql.nodes.validate_result_llm", fake_llm):
+        result = await validate_llm(state)
+
+    assert result["verdict"] == "TABLE_MISSING"
+    assert result["force_table_search"] is True
+    assert "테이블 재검색" in result["last_tool_usage"]
