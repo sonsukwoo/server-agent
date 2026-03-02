@@ -68,6 +68,29 @@ class ParsedRequestModel(StructuredModel):
         return normalized or "unknown"
 
 
+class TimeScopeMode(str, Enum):
+    """시간 범위 결정 모드."""
+
+    ALL_TIME = "all_time"
+    INHERIT = "inherit"
+    EXPLICIT = "explicit"
+    RELATIVE = "relative"
+
+
+class TimeScopeDecision(StructuredModel):
+    """시간 범위 결정기 출력."""
+
+    mode: TimeScopeMode = Field(default=TimeScopeMode.INHERIT)
+    start: str | None = None
+    end: str | None = None
+    timezone: str | None = None
+    anchor: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = Field(default="")
+    needs_clarification: bool = Field(default=False)
+    clarification_question: str = Field(default="")
+
+
 class TableRerankItem(StructuredModel):
     """리랭크 점수 단일 항목."""
 

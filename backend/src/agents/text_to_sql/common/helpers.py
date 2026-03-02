@@ -29,6 +29,7 @@ from ..schemas import (
     IntentClassification,
     ParsedRequestModel,
     TableRerankResult,
+    TimeScopeDecision,
     ValidationResult,
 )
 
@@ -52,6 +53,7 @@ llm_smart = ChatOpenAI(
 # Structured Output 바인딩
 intent_classifier_llm = llm_fast.with_structured_output(IntentClassification)
 parse_request_llm = llm_fast.with_structured_output(ParsedRequestModel)
+resolve_time_scope_llm = llm_fast.with_structured_output(TimeScopeDecision)
 clarification_check_llm = llm_fast.with_structured_output(ClarificationCheck)
 table_rerank_llm = llm_smart.with_structured_output(TableRerankResult)
 generate_sql_llm = llm_smart.with_structured_output(GenerateSqlResult)
@@ -202,6 +204,20 @@ def _extract_time_range_from_sql(sql: str) -> tuple[str, str]:
     return "", ""
 
 
+def _get_effective_time_range(state: TextToSQLState) -> dict:
+    """시간 범위를 state 우선순위에 따라 반환한다.
+
+    우선순위:
+    1) resolve_time_scope 노드가 확정한 effective_time_scope
+    2) parsed_request.time_range
+    """
+    effective = state.get("effective_time_scope")
+    if isinstance(effective, dict) and effective:
+        return effective
+    parsed = state.get("parsed_request", {}) or {}
+    return parsed.get("time_range", {}) or {}
+
+
 # ─────────────────────────────────────────
 # SQL 생성 프롬프트 구성 함수
 # ─────────────────────────────────────────
@@ -209,7 +225,7 @@ def _extract_time_range_from_sql(sql: str) -> tuple[str, str]:
 def _build_sql_prompt_inputs(state: TextToSQLState) -> dict:
     """SQL 생성 프롬프트에 주입할 변수 딕셔너리 구성."""
     failed = state.get("failed_queries", []) or []
-    time_range = state.get("parsed_request", {}).get("time_range", {})
+    time_range = _get_effective_time_range(state)
 
     previous_sql = _extract_previous_sql_from_messages(state)
 
@@ -305,7 +321,7 @@ def _append_failed_query(failed_queries: list[str], sql: str) -> list[str]:
 
 def _build_validation_messages(state: TextToSQLState, current_sql: str) -> list:
     """결과 검증용 LLM 메시지 리스트 생성."""
-    time_range = state.get("parsed_request", {}).get("time_range", {})
+    time_range = _get_effective_time_range(state)
 
     if time_range.get("all_time"):
         time_mode = "all_time"

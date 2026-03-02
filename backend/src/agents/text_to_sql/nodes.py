@@ -8,6 +8,7 @@ import json
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
+from config.settings import settings
 from src.agents.mcp_clients.connector import postgres_client, qdrant_search_client
 from src.agents.text_to_sql.middleware.parsed_request_guard import ParsedRequestGuard
 from src.agents.text_to_sql.middleware.sql_safety_guard import SqlOutputGuard
@@ -17,6 +18,8 @@ from .state import TextToSQLState
 from .prompts import (
     PARSE_REQUEST_SYSTEM,
     PARSE_REQUEST_USER,
+    TIME_SCOPE_RESOLVE_SYSTEM,
+    TIME_SCOPE_RESOLVE_USER,
     GENERATE_REPORT_SYSTEM,
     GENERATE_REPORT_USER,
     CLASSIFY_INTENT_SYSTEM,
@@ -35,6 +38,7 @@ from .common.utils import (
 from .common.helpers import (
     intent_classifier_llm,
     parse_request_llm,
+    resolve_time_scope_llm,
     clarification_check_llm,
     generate_sql_llm,
     validate_result_llm,
@@ -240,12 +244,144 @@ async def validate_request(state: TextToSQLState) -> dict:
 
 
 # ─────────────────────────────────────────
-# Node 4: check_clarification
+# Node 4: resolve_time_scope
+# ─────────────────────────────────────────
+
+def _normalize_effective_time_scope(
+    parsed: dict,
+    previous_scope: dict,
+    decision: dict,
+) -> dict:
+    """시간 결정 결과를 SQL 생성용 단일 스코프로 정규화한다."""
+    requested = parsed.get("time_range", {}) or {}
+    previous = previous_scope or {}
+    mode = decision.get("mode")
+
+    if not mode:
+        if requested.get("all_time"):
+            mode = "all_time"
+        elif requested.get("start") or requested.get("end") or requested.get("from_beginning"):
+            mode = "explicit"
+        elif requested.get("inherit") or parsed.get("is_followup"):
+            mode = "inherit"
+        else:
+            mode = "all_time"
+
+    timezone = (
+        decision.get("timezone")
+        or requested.get("timezone")
+        or previous.get("timezone")
+        or settings.tz
+    )
+
+    if mode == "all_time":
+        return {"all_time": True, "timezone": timezone}
+
+    if mode == "inherit":
+        if previous.get("all_time"):
+            return {
+                "all_time": True,
+                "timezone": previous.get("timezone") or timezone,
+            }
+        if previous:
+            inherited = dict(previous)
+            inherited["timezone"] = inherited.get("timezone") or timezone
+            inherited["inherit"] = True
+            return inherited
+        if requested.get("start") or requested.get("end"):
+            mode = "explicit"
+        else:
+            return {"all_time": True, "timezone": timezone}
+
+    if mode in ("explicit", "relative"):
+        start = decision.get("start", requested.get("start"))
+        end = decision.get("end", requested.get("end"))
+        scope = {"timezone": timezone}
+
+        if start:
+            scope["start"] = start
+        else:
+            scope["start"] = None
+
+        if end:
+            scope["end"] = end
+        elif start:
+            scope["end"] = get_current_time()
+
+        if not start and scope.get("end"):
+            scope["from_beginning"] = True
+
+        if scope.get("start") or scope.get("end") or scope.get("from_beginning"):
+            return scope
+
+    if previous:
+        fallback = dict(previous)
+        fallback["timezone"] = fallback.get("timezone") or timezone
+        fallback["inherit"] = True
+        return fallback
+    return {"all_time": True, "timezone": timezone}
+
+
+async def resolve_time_scope(state: TextToSQLState) -> dict:
+    """시간 범위를 별도 구조화 단계에서 확정한다."""
+    logger.info("TEXT_TO_SQL:resolve_time_scope start")
+    parsed = dict(state.get("parsed_request", {}) or {})
+    previous_scope = state.get("effective_time_scope", {}) or {}
+
+    messages = [
+        SystemMessage(content=TIME_SCOPE_RESOLVE_SYSTEM),
+        HumanMessage(content=TIME_SCOPE_RESOLVE_USER.format(
+            current_time=get_current_time(),
+            user_question=state.get("user_question", ""),
+            parsed_request=json.dumps(parsed, ensure_ascii=False),
+            previous_time_scope=json.dumps(previous_scope, ensure_ascii=False),
+        )),
+    ]
+
+    decision: dict = {}
+    try:
+        response = await resolve_time_scope_llm.ainvoke(messages)
+        decision = response.model_dump(exclude_none=True)
+    except Exception as exc:
+        logger.warning("TEXT_TO_SQL:resolve_time_scope structured_output_error=%s", exc)
+
+    final_scope = _normalize_effective_time_scope(parsed, previous_scope, decision)
+    parsed["time_range"] = final_scope
+
+    mode = "all_time" if final_scope.get("all_time") else (
+        "inherit" if final_scope.get("inherit") else "explicit"
+    )
+    update = {
+        "parsed_request": parsed,
+        "effective_time_scope": final_scope,
+        "needs_clarification": False,
+        "clarification_question": "",
+        "last_tool_usage": f"시간 범위 결정 완료: {mode}",
+    }
+
+    if decision.get("needs_clarification") and decision.get("clarification_question"):
+        update["needs_clarification"] = True
+        update["clarification_question"] = decision.get("clarification_question")
+        update["last_tool_usage"] = f"시간 범위 확인 필요: {decision.get('clarification_question')}"
+
+    return update
+
+
+# ─────────────────────────────────────────
+# Node 5: check_clarification
 # ─────────────────────────────────────────
 
 async def check_clarification(state: TextToSQLState) -> dict:
     """파싱된 요청의 핵심 정보 충분 여부를 LLM으로 판단."""
     logger.info("TEXT_TO_SQL:check_clarification start")
+
+    if state.get("needs_clarification") and state.get("clarification_question"):
+        question = state.get("clarification_question")
+        return {
+            "needs_clarification": True,
+            "clarification_question": question,
+            "last_tool_usage": f"추가 정보 필요: {question}",
+        }
 
     parsed = state.get("parsed_request", {})
     messages = [

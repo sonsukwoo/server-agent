@@ -337,8 +337,8 @@ export const ChatInterface: React.FC = () => {
                         <button className="chip" onClick={() => setInputValue('해당 결과에서 상위 5개 추출')}>
                             해당 결과에서 상위 5개 추출
                         </button>
-                        <button className="chip" onClick={() => setInputValue('램 사용률이 40프로 넘었을때만 보여줘')}>
-                            램 사용률이 40% 넘었을때만 보여줘
+                        <button className="chip" onClick={() => setInputValue('전체 데이터에서 램 사용률이 40프로 넘었을때만 보여줘')}>
+                            전체 데이터에서 램 사용률이 40% 넘었을때만 보여줘
                         </button>
                     </div>
                     <form className="input-wrapper" onSubmit={handleSubmit}>

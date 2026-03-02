@@ -65,6 +65,7 @@ class TextToSQLState(TypedDict, total=False):
 
     # 파싱
     parsed_request: ParsedRequest
+    effective_time_scope: dict
     is_request_valid: bool
     request_error: str
 
@@ -126,6 +127,7 @@ def make_initial_state(
         "classified_intent": None,
         "request_error": "",
         "validation_reason": "",
+        "effective_time_scope": {},
         "sql_guard_error": "",
         "sql_error": None,
         "last_tool_usage": None,

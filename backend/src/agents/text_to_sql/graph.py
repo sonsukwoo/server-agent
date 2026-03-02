@@ -8,6 +8,7 @@ from .nodes import (
     general_chat,
     parse_request,
     validate_request,
+    resolve_time_scope,
     check_clarification,
     retrieve_tables,
     select_tables,
@@ -104,7 +105,7 @@ def build_text_to_sql_graph() -> StateGraph:
     """LangGraph 워크플로우 구성.
 
     흐름:
-    classify_intent → (sql) parse_request → validate_request
+    classify_intent → (sql) parse_request → validate_request → resolve_time_scope
                        → check_clarification → (proceed) retrieve_tables → ...
                        → check_clarification → (clarify) END (역질문)
     classify_intent → (general) general_chat → END
@@ -116,6 +117,7 @@ def build_text_to_sql_graph() -> StateGraph:
     workflow.add_node("general_chat", general_chat)
     workflow.add_node("parse_request", parse_request)
     workflow.add_node("validate_request", validate_request)
+    workflow.add_node("resolve_time_scope", resolve_time_scope)
     workflow.add_node("check_clarification", check_clarification)
     workflow.add_node("retrieve_tables", retrieve_tables)
     workflow.add_node("select_tables", select_tables)
@@ -143,8 +145,9 @@ def build_text_to_sql_graph() -> StateGraph:
     workflow.add_conditional_edges(
         "validate_request",
         check_request_valid,
-        {"valid": "check_clarification", "invalid": "generate_report"},
+        {"valid": "resolve_time_scope", "invalid": "generate_report"},
     )
+    workflow.add_edge("resolve_time_scope", "check_clarification")
 
     # HITL: 정보 충분하면 진행, 부족하면 END(역질문)
     workflow.add_conditional_edges(

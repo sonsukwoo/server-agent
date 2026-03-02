@@ -9,6 +9,7 @@ from src.agents.text_to_sql.nodes import (
     _handle_unnecessary_tables,
     normalize_result,
     parse_request,
+    resolve_time_scope,
     retrieve_tables,
     validate_llm,
 )
@@ -20,6 +21,8 @@ from src.agents.text_to_sql.schemas import (
     ClarificationCheck,
     GenerateSqlResult,
     ParsedRequestModel,
+    TimeScopeDecision,
+    TimeScopeMode,
     TimeRangeModel,
     ValidationResult,
     ValidationVerdict,
@@ -101,6 +104,54 @@ async def test_time_inheritance_normal():
         
         # 상속되었어야 함
         assert parsed["time_range"] == old_parsed["time_range"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_time_scope_inherit_uses_previous_scope():
+    """resolve_time_scope가 inherit 모드에서 이전 확정 시간을 우선 적용하는지 테스트."""
+    mock_response = TimeScopeDecision(mode=TimeScopeMode.INHERIT, reason="후속 질문")
+    state = TextToSQLState(
+        user_question="해당 결과에서 상위 5개만 보여줘",
+        parsed_request={"is_followup": True, "time_range": {"inherit": True}},
+        effective_time_scope={
+            "start": "2026-02-24T13:00:00+09:00",
+            "end": "2026-02-24T15:00:00+09:00",
+            "timezone": "Asia/Seoul",
+        },
+    )
+
+    with patch("src.agents.text_to_sql.nodes.resolve_time_scope_llm", _mock_structured_llm(mock_response)):
+        result = await resolve_time_scope(state)
+
+    assert result["effective_time_scope"]["start"] == "2026-02-24T13:00:00+09:00"
+    assert result["effective_time_scope"]["end"] == "2026-02-24T15:00:00+09:00"
+    assert result["effective_time_scope"]["inherit"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_time_scope_all_time_overrides_followup_inherit():
+    """후속 질문이어도 all_time 결정이면 시간 상속보다 우선되는지 테스트."""
+    mock_response = TimeScopeDecision(mode=TimeScopeMode.ALL_TIME, reason="전체 데이터 요청")
+    state = TextToSQLState(
+        user_question="전체 데이터에서 램 40% 넘은 것만 보여줘",
+        parsed_request={
+            "is_followup": True,
+            "time_range": {"inherit": True},
+        },
+        effective_time_scope={
+            "start": "2026-02-24T13:00:00+09:00",
+            "end": "2026-02-24T15:00:00+09:00",
+            "timezone": "Asia/Seoul",
+        },
+    )
+
+    with patch("src.agents.text_to_sql.nodes.resolve_time_scope_llm", _mock_structured_llm(mock_response)):
+        result = await resolve_time_scope(state)
+
+    scope = result["effective_time_scope"]
+    assert scope.get("all_time") is True
+    assert "start" not in scope
+    assert "end" not in scope
 
 
 @pytest.mark.asyncio

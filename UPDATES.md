@@ -1,3 +1,39 @@
+# 🆕 v2.1.4 업데이트: 시간 결정 분리(`resolve_time_scope`) 도입 (2026-03-03)
+
+시간 처리 오류를 줄이기 위해, 시간 범위 결정을 파싱 단계와 분리한 구조화 노드를 추가했습니다.
+
+## ✅ 반영 내용
+
+- `resolve_time_scope` 노드 추가
+  - 파싱 결과 + 이전 확정 시간 범위를 입력으로 받아 최종 시간 스코프를 결정
+  - 출력은 `effective_time_scope`로 상태에 저장
+  - 파일: `backend/src/agents/text_to_sql/nodes.py`
+- 그래프 흐름 변경
+  - `parse_request -> validate_request -> resolve_time_scope -> check_clarification`
+  - 파일: `backend/src/agents/text_to_sql/graph.py`
+- 신규 구조화 스키마 추가
+  - `TimeScopeMode`, `TimeScopeDecision`
+  - 파일: `backend/src/agents/text_to_sql/schemas.py`
+- 시간 결정용 프롬프트 추가
+  - `TIME_SCOPE_RESOLVE_SYSTEM`, `TIME_SCOPE_RESOLVE_USER`
+  - 파일: `backend/src/agents/text_to_sql/prompts.py`
+- SQL/검증 프롬프트 입력에서 `effective_time_scope` 우선 사용
+  - SQL 문자열 파싱 fallback 의존도 축소
+  - 파일: `backend/src/agents/text_to_sql/common/helpers.py`
+- 상태 확장
+  - `effective_time_scope` 필드 추가
+  - 파일: `backend/src/agents/text_to_sql/state.py`
+
+## 🧪 테스트
+
+- 신규 테스트:
+  - inherit 모드에서 이전 확정 시간 범위 적용
+  - all_time 모드가 follow-up 상속보다 우선
+- 누적 결과:
+  - `27 passed`
+
+---
+
 # 🆕 v2.1.3 업데이트: 후속질문 기본 경로 벡터 보강 검색 활성화 (2026-03-03)
 
 후속질문에서 이전 테이블 재사용만 하고 벡터 검색을 건너뛰던 경로를 수정했습니다.

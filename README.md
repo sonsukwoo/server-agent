@@ -23,11 +23,13 @@
 ### 3. 🧠 지능형 질의 구조화 및 미들웨어 검증 (LLM & Middleware)
 사용자의 투박한 질문을 에이전트가 분석하기 최적화된 정교한 구조로 변환하고, 미들웨어를 통해 데이터의 신뢰성을 보장합니다.
 - **LLM Structured Outputs (`with_structured_output`)**: 사용자 질문을 Pydantic 스키마로 즉시 구조화하여 의도(Intent)와 파라미터를 안정적으로 분리합니다. 수동 `json.loads` 파싱을 제거해 파싱 오류 가능성을 크게 줄였습니다.
+- **시간 결정 분리(`resolve_time_scope`)**:
+    - 파싱 결과와 이전 확정 시간 범위를 별도 노드에서 다시 판단해 최종 시간 스코프(`effective_time_scope`)를 확정합니다.
+    - `all_time | inherit | explicit | relative` 모드를 구조화 출력으로 관리하여 시간 상속 오류를 줄입니다.
 - **`ParsedRequestGuard` 미들웨어 검증 및 교정**:
-    - **시간 범위 기본값 미적용**: 사용자가 시간을 명시하지 않으면 시간 조건을 추가하지 않습니다(전체 기간 기준).
-    - **미래 시점 Auto-Clipping**: "오늘 데이터 보여줘"와 같은 요청 시 LLM이 시간 범위를 00:00~24:00로 설정하더라도, 미들웨어가 현재 시각을 확인하여 **24:00인 종료 시간(End Time)을 현재 시각으로 즉시 교정**합니다.
-    - **후속 질문 상속 플래그**: 참조 표현을 감지하면 `inherit` 모드로 표시하고, 이전 쿼리의 시간 조건/필터를 유지하도록 유도합니다.
-    - **에이전트 친화적 구조 확립**: 구조화된 질문이 물리적/논리적으로 유효한지 미들웨어 단계에서 한 번 더 검증하고 보정함으로써, 에이전트가 환각(Hallucination) 없이 정확한 SQL을 생성하도록 유도합니다.
+    - **미래 시점 Auto-Clipping**: 종료 시각이 미래면 현재 시각으로 자동 보정합니다.
+    - **start-only / end-only 보정**: `start`만 있으면 `end=now`, `end`만 있으면 `from_beginning` 모드로 보정합니다.
+    - **에이전트 친화적 구조 확립**: 구조화된 질문이 물리적/논리적으로 유효한지 미들웨어 단계에서 한 번 더 검증하고 보정합니다.
     - **구조화 출력 실패 즉시 감지**: SQL 생성 단계의 임시 raw fallback 경로를 제거하여, 구조화 출력 오류를 즉시 실패 상태로 노출하고 문제를 빠르게 추적할 수 있습니다.
 
 ### 4. 🔗 스키마 자동 인식 및 고급 RAG (Table Discovery)
@@ -41,8 +43,8 @@
     - 벡터 검색을 통해 질문과 가장 관련 있는 테이블-청크를 선별한 후, 해당 테이블의 **정확한 명칭(Table Name)**과 **전체 컬럼 목록(Column List)**을 추출합니다.
     - 단순히 스키마 정보만 나열하는 것이 아니라, 각 컬럼이 **어떤 데이터를 담고 있는지에 대한 상세 설명(Comment/Description)**을 함께 제공합니다. 이를 통해 LLM은 테이블 간의 관계와 각 컬럼의 용도를 명확히 이해하고, 실제 실행 가능한 최적의 SQL을 생성하게 됩니다.
 - **지능형 테이블 확장 및 캐싱**: 
-    - LLM 리랭크(Rerank)를 거쳐 가장 관련성 높은 **Top-5** 테이블을 우선적으로 컨텍스트에 포함합니다.
-    - Top-5에 들지 못한 나머지 후보 테이블들은 내부 캐시에 안전하게 보관합니다.
+    - LLM 리랭크(Rerank)를 거쳐 가장 관련성 높은 **Top-K** 테이블을 우선적으로 컨텍스트에 포함합니다.
+    - 초기 선정에 들지 못한 나머지 후보 테이블들은 내부 캐시에 안전하게 보관합니다.
     - 쿼리 생성이나 검증 단계에서 "테이블 정보가 부족하다"고 판단될 경우, 에이전트가 스스로 **툴 콜(Tool Call)**을 수행하여 캐시된 후보들 중 필요한 테이블을 추가로 탐색하고 컨텍스트를 확장합니다.
 
 ### 5. 🧠 맥락 인식 및 상태 관리 (Context-aware State Management)
@@ -50,10 +52,12 @@
 - **완벽한 대화 복원 (Thread-based Persistence)**:
     - `thread_id` 하나만 있으면 언제든 이전 대화, 생성된 SQL, 실행 결과, 에러 메시지 등 **모든 상태(State)**를 완벽하게 복원합니다.
     - 단순 텍스트 저장이 아닌, LangChain의 `Message` 객체와 에이전트 내부 변수를 직렬화하여 저장하므로, 서버 재시작 후에도 대화가 끊기지 않습니다.
-- **문맥 기반 의도 파악 (Intelligent Context Parsing)**:
-    - "전체 기간", "모든 데이터" 등의 표현을 감지하면, 이전 쿼리의 시간 제약에 얽매이지 않고 **능동적으로 전체 범위를 조회(`ALL`)**합니다.
-    - "2.5일", "어제"와 같은 **날짜 약어**를 자동으로 인식하여 정확한 날짜(ISO 8601)로 변환합니다.
-    - "상위 5개만"과 같은 후속 질문 시, **이전 쿼리의 조건을 똑똑하게 상속(Inherit)**하여 자연스러운 대화를 이어갑니다.
+- **문맥 기반 파싱 및 시간 스코프 확정**:
+    - "2.5일", "어제"와 같은 날짜 약어를 파싱하고, 시간 결정 노드에서 최종 스코프를 확정합니다.
+    - 후속 질문에서는 이전 확정 시간 범위(`effective_time_scope`)를 우선 참조해 상속/해제 여부를 안정적으로 처리합니다.
+- **후속 질문 테이블 보강 검색**:
+    - 후속 질문에서도 기본적으로 **이전 테이블 + 벡터 검색 보강**을 함께 수행합니다.
+    - `TABLE_MISSING` 또는 후속 질문의 `COLUMN_MISSING` 발생 시 테이블 재검색 경로로 자동 승격합니다.
 - **하이브리드 HITL (Human-in-the-Loop)**:
     - 정보 부족 시 무리하게 SQL을 생성하지 않고, 즉시 멈추어(Interrupt) 사용자에게 역질문을 던집니다.
 
@@ -71,11 +75,12 @@
 ---
 
 ## 🧭 시간 모드 (Time Mode)
-시간 범위가 명시되지 않은 질문과 후속 질문의 동작을 명확히 하기 위해 `time_mode`를 사용합니다.
+시간 범위는 `resolve_time_scope` 노드에서 `effective_time_scope`로 확정되며, SQL 생성/검증 단계는 이 값을 기준으로 동작합니다.
 
 - **all_time**: 시간 범위가 명시되지 않은 경우. SQL에 시간 조건을 추가하지 않습니다.
 - **inherit**: 이전 결과를 참조하는 후속 질문에서 시간 범위를 명시하지 않은 경우. 이전 SQL의 시간 조건을 유지합니다.
 - **explicit**: 사용자가 시간 범위를 명시한 경우. 해당 범위를 그대로 반영합니다.
+- **relative**: 상대 시간 표현(예: 최근 N분/어제)을 절대 시간 범위로 해석해 반영합니다.
 
 검증 단계에서 `time_mode`와 SQL의 시간 조건이 일치하지 않으면 재생성을 요청합니다.
 
@@ -122,31 +127,33 @@ graph TD
     classify_intent -- "sql" --> parse_request["2. parse_request (구조화)"]
     general_chat --> End((종료))
 
-    %% Request Validation + HITL
+    %% Request Validation + Time Scope + HITL
     parse_request --> validate_request{"3. validate_request (검증)"}
-    validate_request -- "valid" --> check_clarification{"4. check_clarification (역질문 판단)"}
-    validate_request -- "invalid" --> generate_report["12. generate_report (최종 보고서)"]
+    validate_request -- "valid" --> resolve_time_scope["4. resolve_time_scope (시간 확정)"]
+    validate_request -- "invalid" --> generate_report["13. generate_report (최종 보고서)"]
+    resolve_time_scope --> check_clarification{"5. check_clarification (역질문 판단)"}
 
     check_clarification -- "clarify" --> End
-    check_clarification -- "proceed" --> retrieve_tables["5. retrieve_tables (벡터 검색)"]
+    check_clarification -- "proceed" --> retrieve_tables["6. retrieve_tables (벡터 검색)"]
 
     %% Table Selection
-    retrieve_tables --> select_tables{"6. select_tables (리랭킹)"}
-    select_tables -- "valid" --> generate_sql["7. generate_sql (SQL 생성)"]
+    retrieve_tables --> select_tables{"7. select_tables (리랭킹)"}
+    select_tables -- "valid" --> generate_sql["8. generate_sql (SQL 생성)"]
     select_tables -- "invalid" --> generate_report
 
     %% SQL Guard
-    generate_sql --> guard_sql{"8. guard_sql (보안 검사)"}
+    generate_sql --> guard_sql{"9. guard_sql (보안 검사)"}
     guard_sql -- "retry" --> generate_sql
-    guard_sql -- "ok" --> execute_sql["9. execute_sql (DB 실행)"]
+    guard_sql -- "ok" --> execute_sql["10. execute_sql (DB 실행)"]
     guard_sql -- "fail" --> generate_report
 
     %% Execution & Validation
-    execute_sql --> normalize_result["10. normalize_result (정규화)"]
-    normalize_result --> validate_llm{"11. validate_llm (결과 검증)"}
+    execute_sql --> normalize_result["11. normalize_result (정규화)"]
+    normalize_result --> validate_llm{"12. validate_llm (결과 검증)"}
 
     %% Cyclic Correction
     validate_llm -- "retry_sql" --> generate_sql
+    validate_llm -- "retry_tables" --> retrieve_tables
     validate_llm -- "ok/fail" --> generate_report
 
     %% End
@@ -161,20 +168,22 @@ graph TD
 | **1** | **`general_chat`** | `general` 분기에서 일반 대화 응답을 생성하고 종료합니다. | `ChatOpenAI` |
 | **2** | **`parse_request`** | 사용자 자연어를 분석하여 **의도/지표/시간 범위**를 구조화합니다. | `ChatOpenAI` + `with_structured_output(ParsedRequestModel)` |
 | **3** | **`validate_request`** | 파싱 결과의 보안성과 논리 타당성을 검증/보정합니다. | `ParsedRequestGuard` |
-| **4** | **`check_clarification`** | 정보가 부족하면 역질문(HITL)로 분기합니다. | `ChatOpenAI` + `with_structured_output(ClarificationCheck)` |
-| **5** | **`retrieve_tables`** | 질의와 연관된 테이블 후보를 검색합니다. | **Tool**: `search_tables` (Qdrant) |
-| **6** | **`select_tables`** | 후보를 리랭크해 실제 SQL 컨텍스트 테이블을 확정합니다. | `LLM Rerank` + `with_structured_output(TableRerankResult)` |
-| **7** | **`generate_sql`** | SQL을 생성하고 필요 시 테이블 컨텍스트를 확장합니다. | `with_structured_output(GenerateSqlResult)` + **Tool**: `expand_tables` (Internal Cache) |
-| **8** | **`guard_sql`** | 생성 SQL의 안전성과 문법을 사전 차단합니다. | `SqlOutputGuard` |
-| **9** | **`execute_sql`** | 검증된 SQL을 DB에서 실행합니다. | **Tool**: `execute_sql` (Postgres) |
-| **10** | **`normalize_result`** | 실행 결과/에러를 정규화하고 재시도 분류 정보를 만듭니다. | `Result Normalizer` |
-| **11** | **`validate_llm`** | 결과 적합성을 검증하고 필요 시 SQL 재생성을 트리거합니다. | `with_structured_output(ValidationResult)` / `Reflection` |
-| **12** | **`generate_report`** | 최종 사용자 응답(리포트)을 생성합니다. | `Markdown Report Gen` |
+| **4** | **`resolve_time_scope`** | 파싱 결과와 이전 확정 시간 범위를 기반으로 최종 시간 범위(`effective_time_scope`)를 결정합니다. | `ChatOpenAI` + `with_structured_output(TimeScopeDecision)` |
+| **5** | **`check_clarification`** | 정보가 부족하면 역질문(HITL)로 분기합니다. | `ChatOpenAI` + `with_structured_output(ClarificationCheck)` |
+| **6** | **`retrieve_tables`** | 질의와 연관된 테이블 후보를 검색합니다. 후속 질문에서도 이전 테이블 기반 + 벡터 보강 검색을 수행합니다. | **Tool**: `search_tables` (Qdrant) |
+| **7** | **`select_tables`** | 후보를 리랭크해 실제 SQL 컨텍스트 테이블을 확정합니다. | `LLM Rerank` + `with_structured_output(TableRerankResult)` |
+| **8** | **`generate_sql`** | SQL을 생성하고 필요 시 테이블 컨텍스트를 확장합니다. | `with_structured_output(GenerateSqlResult)` + **Tool**: `expand_tables` (Internal Cache) |
+| **9** | **`guard_sql`** | 생성 SQL의 안전성과 문법을 사전 차단합니다. | `SqlOutputGuard` |
+| **10** | **`execute_sql`** | 검증된 SQL을 DB에서 실행합니다. | **Tool**: `execute_sql` (Postgres) |
+| **11** | **`normalize_result`** | 실행 결과/에러를 정규화하고 재시도 분류 정보를 만듭니다. | `Result Normalizer` |
+| **12** | **`validate_llm`** | 결과 적합성을 검증하고 필요 시 SQL 재생성(`retry_sql`) 또는 테이블 재검색(`retry_tables`)을 트리거합니다. | `with_structured_output(ValidationResult)` / `Reflection` |
+| **13** | **`generate_report`** | 최종 사용자 응답(리포트)을 생성합니다. | `Markdown Report Gen` |
 
 ### 🧠 핵심 기술: 지능형 테이블 캐싱 및 확장
-- **Top-5 Rerank**: 벡터 검색 결과 중 가장 연관성이 높은 5개 테이블을 우선 컨텍스트로 사용합니다.
-- **후보군 캐싱**: TOP-5에 들지 못한 나머지 테이블은 내부 상태에 캐싱해 둡니다.
+- **Top-K Rerank**: 벡터 검색 결과 중 가장 연관성이 높은 K개 테이블을 우선 컨텍스트로 사용합니다.
+- **후보군 캐싱**: 초기 선정에 들지 못한 나머지 후보 테이블은 내부 상태에 캐싱해 둡니다.
 - **Dynamic Expansion**: `generate_sql` 노드에서 LLM이 테이블 정보가 더 필요하다고 판단하면, `expand_tables` 툴을 호출하여 캐시에서 관련 테이블을 즉시 추가하고 쿼리를 재생성합니다.
+- **Follow-up Hybrid Search**: 후속 질문에서도 이전 쿼리 테이블만 재사용하지 않고 벡터 검색을 병행해 신규 테이블 후보를 자동 보강합니다.
 
 ---
 

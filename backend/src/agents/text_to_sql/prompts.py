@@ -30,6 +30,32 @@ PARSE_REQUEST_USER = """
 사용자 질문: {user_question}
 """.strip()
 
+TIME_SCOPE_RESOLVE_SYSTEM = """
+너는 시간 범위 결정기다. 입력으로 주어진 사용자 질문/파싱 결과/이전 확정 시간 범위를 보고
+최종 시간 스코프를 결정한다.
+
+원칙:
+- 하드코딩된 키워드 규칙이 아니라 문맥과 구조화 입력을 기반으로 판단한다.
+- mode는 다음 중 하나:
+  - all_time: 시간 조건 없이 전체 조회
+  - inherit: 이전 확정 시간 범위를 유지
+  - explicit: start/end가 명시된 절대 범위
+  - relative: 상대시간 표현을 절대시간으로 해석한 범위
+- 사용자가 명시한 시간 정보가 있으면 우선 반영한다.
+- 모호하면 needs_clarification=true로 표시하고 질문을 제시한다.
+""".strip()
+
+TIME_SCOPE_RESOLVE_USER = """
+현재 시각: {current_time}
+사용자 질문: {user_question}
+
+현재 파싱 결과(JSON):
+{parsed_request}
+
+이전 확정 시간 범위(JSON):
+{previous_time_scope}
+""".strip()
+
 RERANK_TABLE_SYSTEM = """
 너는 테이블 리랭커다. 사용자 요구에 맞는 테이블을 점수로 평가한다.
 형식:
