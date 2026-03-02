@@ -29,15 +29,16 @@ from .prompts import (
 from .common.constants import RETRIEVE_K, TOP_K
 from .common.utils import (
     get_current_time,
-    parse_json_from_llm,
-    normalize_sql,
     build_table_context,
     classify_sql_error,
 )
 from .common.helpers import (
-    structured_llm_fast,
+    intent_classifier_llm,
+    parse_request_llm,
+    clarification_check_llm,
+    generate_sql_llm,
+    validate_result_llm,
     llm_fast,
-    llm_smart,
     logger,
     _trim_conversation,
     _extract_previous_sql_from_messages,
@@ -72,21 +73,9 @@ async def classify_intent(state: TextToSQLState) -> dict:
     ]
 
     try:
-        response = await structured_llm_fast.ainvoke(messages)
-        parsed = json.loads(response.content)
-        intent = parsed.get("intent", "sql")
-        reason = parsed.get("reason", "")
-
-        if isinstance(intent, str):
-            intent = intent.lower().strip()
-
-        if intent not in ["sql", "general"]:
-            logger.warning(
-                "TEXT_TO_SQL:classify_intent invalid_intent=%s, fallback to sql",
-                intent,
-            )
-            intent = "sql"
-
+        response = await intent_classifier_llm.ainvoke(messages)
+        intent = response.intent
+        reason = response.reason
         logger.info("TEXT_TO_SQL:classify_intent result=%s reason=%s", intent, reason)
     except Exception as e:
         logger.warning("TEXT_TO_SQL:classify_intent error=%s, defaulting to sql", e)
@@ -156,32 +145,11 @@ async def parse_request(state: TextToSQLState) -> dict:
     ]
 
     try:
-        response = await structured_llm_fast.ainvoke(messages)
-        parsed = json.loads(response.content)
-    except json.JSONDecodeError as e:
-        logger.error("TEXT_TO_SQL:parse_request json_decode_error=%s", e)
-        err = f"JSON 파싱 실패: {e}"
-        return {
-            "parsed_request": {},
-            "is_request_valid": False,
-            "request_error": err,
-            "validation_reason": err,
-            "last_tool_usage": err,
-        }
+        response = await parse_request_llm.ainvoke(messages)
+        parsed = response.model_dump(exclude_none=True)
     except Exception as e:
-        logger.error("TEXT_TO_SQL:parse_request llm_error=%s", e)
-        err = f"LLM 호출 실패: {str(e)}"
-        return {
-            "parsed_request": {},
-            "is_request_valid": False,
-            "request_error": err,
-            "validation_reason": err,
-            "last_tool_usage": err,
-        }
-
-    if not isinstance(parsed, dict):
-        logger.error("TEXT_TO_SQL:parse_request invalid_type=%s", type(parsed))
-        err = "LLM 응답이 JSON 객체(dict) 형식이 아닙니다"
+        logger.error("TEXT_TO_SQL:parse_request structured_output_error=%s", e)
+        err = f"구조화 파싱 실패: {str(e)}"
         return {
             "parsed_request": {},
             "is_request_valid": False,
@@ -285,10 +253,9 @@ async def check_clarification(state: TextToSQLState) -> dict:
     ]
 
     try:
-        response = await structured_llm_fast.ainvoke(messages)
-        result = json.loads(response.content)
-        needs = result.get("needs_clarification", False)
-        question = result.get("question", "")
+        response = await clarification_check_llm.ainvoke(messages)
+        needs = response.needs_clarification
+        question = response.question
     except Exception as e:
         logger.warning("TEXT_TO_SQL:check_clarification error=%s, proceeding", e)
         needs = False
@@ -440,34 +407,27 @@ async def generate_sql(state: TextToSQLState) -> dict:
 
     loop_count = 0
     max_loops = 2
+    sql_text = ""
 
     current_state = state.copy()
     last_tool_usage_log = None
 
     while loop_count < max_loops:
         loop_count += 1
-        response = await llm_smart.ainvoke(messages)
-        parsed, error = parse_json_from_llm(response.content)
-
-        if error or not parsed:
-            logger.warning("TEXT_TO_SQL:generate_sql JSON parse failed, assuming raw SQL")
-            raw_sql = response.content.strip()
-            try:
-                normalized = normalize_sql(raw_sql)
-                return {
-                    "generated_sql": normalized,
-                    "sql_guard_error": "",
-                    "last_tool_usage": "SQL 생성 응답 파싱 폴백 사용",
-                }
-            except ValueError:
-                return {
-                    "generated_sql": raw_sql,
-                    "sql_guard_error": "",
-                    "last_tool_usage": "SQL 생성 응답 파싱 폴백 사용",
-                }
-
-        needs_tables = parsed.get("needs_more_tables", False)
-        sql_text = parsed.get("sql", "")
+        try:
+            response = await generate_sql_llm.ainvoke(messages)
+            needs_tables = response.needs_more_tables
+            sql_text = response.sql.strip()
+        except Exception as structured_error:
+            logger.error(
+                "TEXT_TO_SQL:generate_sql structured_output_error=%s",
+                structured_error,
+            )
+            return {
+                "generated_sql": "",
+                "sql_guard_error": f"구조화 SQL 생성 실패: {str(structured_error)}",
+                "last_tool_usage": "SQL 생성 실패: 구조화 출력 오류",
+            }
 
         if needs_tables:
             if current_state.get("table_expand_failed"):
@@ -686,21 +646,20 @@ async def validate_llm(state: TextToSQLState) -> dict:
     current_sql = state.get("generated_sql", "")
     messages = _build_validation_messages(state, current_sql)
 
-    response = await llm_smart.ainvoke(messages)
-    parsed, error = parse_json_from_llm(response.content)
-
-    if error or not parsed:
-        logger.warning("TEXT_TO_SQL:validate_llm JSON parse failed")
+    try:
+        parsed = await validate_result_llm.ainvoke(messages)
+    except Exception as exc:
+        logger.warning("TEXT_TO_SQL:validate_llm structured_output_error=%s", exc)
         return {
             "verdict": "OK",
-            "validation_reason": "검증 응답 파싱 실패, 결과 수용",
-            "last_tool_usage": "결과 검증 응답 파싱 실패 (수용)",
+            "validation_reason": "검증 구조화 파싱 실패, 결과 수용",
+            "last_tool_usage": "결과 검증 구조화 파싱 실패 (수용)",
         }
 
-    verdict = parsed.get("verdict", "OK")
-    reason = parsed.get("feedback_to_sql") or parsed.get("reason", "")
-    hint = parsed.get("correction_hint") or parsed.get("hint", "")
-    unnecessary_tables = parsed.get("unnecessary_tables", [])
+    verdict = parsed.verdict.value
+    reason = parsed.reason
+    hint = parsed.hint
+    unnecessary_tables = parsed.unnecessary_tables
 
     if verdict != "OK":
         state_update = {

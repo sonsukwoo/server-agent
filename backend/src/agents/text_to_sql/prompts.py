@@ -2,7 +2,6 @@
 
 PARSE_REQUEST_SYSTEM = """
 너는 SQL 질의 분석기다. 사용자의 질문을 구조화된 JSON으로 변환한다.
-반드시 JSON만 출력한다.
 사용자가 명시한 시간 범위를 반드시 우선 적용하고 임의로 보정하지 마라.
 시간이 명시되지 않았다면 time_range 값을 null로 두어라.
 
@@ -28,13 +27,14 @@ PARSE_REQUEST_SYSTEM = """
 PARSE_REQUEST_USER = """
 현재 시각: {current_time}
 사용자 질문: {user_question}
-JSON만 출력하라.
 """.strip()
 
 RERANK_TABLE_SYSTEM = """
 너는 테이블 리랭커다. 사용자 요구에 맞는 테이블을 점수로 평가한다.
-출력은 JSON 배열만 허용한다.
-형식: [{"index": 1, "score": 0.87}, {"index": 2, "score": 0.82}, ...]
+형식:
+{
+  "items": [{"index": 1, "score": 0.87}, {"index": 2, "score": 0.82}]
+}
 score는 0~1 범위로 상대적 적합도를 표현한다.
 """.strip()
 
@@ -48,7 +48,7 @@ RERANK_TABLE_USER = """
 
 참고: 후보 테이블에 표시된 컬럼은 일부(상위 5개)만 제공되며, 실제 테이블에는 더 많은 컬럼이 있을 수 있다.
 
-JSON 배열로만 출력하라. 상위 후보일수록 score를 높게.
+응답은 items 배열에 점수를 담아라. 상위 후보일수록 score를 높게.
 """.strip()
 
 GENERATE_SQL_SYSTEM = """
@@ -82,13 +82,6 @@ GENERATE_SQL_SYSTEM = """
   - 만약 질문에 답하기 위해 필요한 테이블이 현재 컨텍스트(`table_context`)에 없다면, 억지로 SQL을 만들지 말고 `needs_more_tables: true`를 반환하라.
   - 단, 이미 한 번 확장을 시도했는데도 여전히 없다면(`table_expand_failed` 상태 등), 있는 테이블만으로 최대한 근사치 SQL을 작성하라.
 
-반드시 **JSON 형식**으로 출력한다.
-```json
-{
-  "sql": "SELECT ...",
-  "needs_more_tables": false
-}
-```
 - `needs_more_tables`: true이면 SQL 필드는 비워도 된다.
 - `sql`: 실행 가능한 SQL 쿼리 (마크다운 없이 문자열).
 
@@ -119,8 +112,6 @@ GENERATE_SQL_USER = """
 이전 시도 기록 및 피드백 (반드시 검토하여 동일한 실수를 피하고 개선할 것):
 {failed_queries}
 {validation_reason}
-
-SQL만 출력하라.
 """.strip()
 
 VALIDATE_RESULT_SYSTEM = """
@@ -144,17 +135,16 @@ VALIDATE_RESULT_SYSTEM = """
 9) 사용자의 질문이 이전 결과/기록을 참조하는 경우 (후속 질문):
    - 사용자가 **새로운 시간 범위를 명시하지 않았다면**, 이전 SQL의 시간 조건을 유지하는 것이 맞다.
    - 사용자가 시간 변경을 요청하지 않았는데 이전 SQL의 시간 조건이 유지되었다면 "OK"로 판단하라.
-   - 반영되지 않았다면 verdict="SQL_BAD"로 판단하고, feedback_to_sql에 누락된 시간/조건을 구체적으로 지적하라.
+   - 반영되지 않았다면 verdict="SQL_BAD"로 판단하고, reason에 누락된 시간/조건을 구체적으로 지적하라.
 10) 추가 제약(사용자의 수정 지시)이 제공된 경우,
    - 해당 제약이 SQL에 반영되었는지 반드시 확인한다.
    - 반영되지 않았다면 verdict="SQL_BAD"로 판단하고,
-     feedback_to_sql에 누락된 제약을 구체적으로 지적하라.
+     reason에 누락된 제약을 구체적으로 지적하라.
 
-반드시 JSON만 출력한다.
 필드:
 - verdict: OK | SQL_BAD | TABLE_MISSING | DATA_MISSING | COLUMN_MISSING | AMBIGUOUS
-- feedback_to_sql: 재생성 시 참고할 '매우 구체적인' 실패 원인 분석.
-- correction_hint: 올바른 SQL 작성을 위한 '핵심 예제 조각' (예: 특정 JOIN 구문이나 필수 컬럼이 포함된 SELECT 문). 에이전트가 이 예제를 보고 즉시 따라할 수 있어야 함.
+- reason: 재생성 시 참고할 '매우 구체적인' 실패 원인 분석.
+- hint: 올바른 SQL 작성을 위한 '핵심 예제 조각' (예: 특정 JOIN 구문이나 필수 컬럼이 포함된 SELECT 문). 에이전트가 이 예제를 보고 즉시 따라할 수 있어야 함.
 - unnecessary_tables: 불필요하다고 판단되는 테이블 목록.
 """.strip()
 
@@ -174,7 +164,7 @@ SQL:
 스키마 컨텍스트:
 {table_context}
 
-체크리스트 기준으로만 판단하고 JSON만 출력하라.
+체크리스트 기준으로만 판단하라.
 """.strip()
 
 GENERATE_REPORT_SYSTEM = """
@@ -222,13 +212,10 @@ CLASSIFY_INTENT_SYSTEM = """
 - "sql": 데이터를 조회·집계·분석하려는 의도 (예: "최근 매출 알려줘", "서버 CPU 사용량", "오늘 주문 건수")
 - "general": 인사, 감사, 시스템 설명 요청, 사용법 질문, 일반 지식 질문 (예: "안녕", "이 시스템 뭐야?", "고마워")
 
-반드시 JSON만 출력한다.
-형식: {"intent": "sql" 또는 "general", "reason": "판단 근거"}
 """.strip()
 
 CLASSIFY_INTENT_USER = """
 사용자 질문: {user_question}
-JSON만 출력하라.
 """.strip()
 
 
@@ -263,8 +250,6 @@ CLARIFICATION_CHECK_SYSTEM = """
 - 시간 범위가 없는 것은 부족으로 판단하지 마라 (전체 기간 조회가 가능하므로).
 - "상위 N개", "하위 N개", "이 중에서", "그 결과에서" 등 이전 맥락을 참조하거나 단순히 정렬/개수 제한을 요청하는 경우는 **충분한 정보**로 간주하라. (needs_clarification: false)
 
-반드시 JSON만 출력한다.
-형식: {"needs_clarification": true/false, "question": "보충 질문 내용 (필요 없으면 빈 문자열)"}
 """.strip()
 
 CLARIFICATION_CHECK_USER = """
@@ -273,8 +258,6 @@ CLARIFICATION_CHECK_USER = """
 - 지표: {metric}
 - 조건: {condition}
 - 원본 질문: {user_question}
-
-JSON만 출력하라.
 """.strip()
 
 

@@ -12,10 +12,18 @@ from src.agents.text_to_sql.nodes import (
     validate_llm,
 )
 from src.agents.text_to_sql.state import TextToSQLState, make_initial_state
+from src.agents.text_to_sql.schemas import (
+    ClarificationCheck,
+    GenerateSqlResult,
+    ParsedRequestModel,
+    TimeRangeModel,
+    ValidationResult,
+    ValidationVerdict,
+)
 
 
-def _mock_structured_llm(mock_response: MagicMock) -> MagicMock:
-    """structured_llm_fast 대체용 mock 객체 생성."""
+def _mock_structured_llm(mock_response) -> MagicMock:
+    """구조화 출력 LLM 대체용 mock 객체 생성."""
     fake_llm = MagicMock()
     fake_llm.ainvoke = AsyncMock(return_value=mock_response)
     return fake_llm
@@ -51,8 +59,7 @@ async def test_time_inheritance_all_time():
     """all_time=True일 때 이전 시간 상속을 거부하는지 테스트."""
     
     # Mock LLM Response (all_time=True)
-    mock_response = MagicMock()
-    mock_response.content = '{"time_range": {"all_time": true}}'
+    mock_response = ParsedRequestModel(time_range=TimeRangeModel(all_time=True))
     
     # Previous State (has time_range)
     old_parsed = {"time_range": {"start": "2025-01-01", "end": "2025-01-31"}}
@@ -61,7 +68,7 @@ async def test_time_inheritance_all_time():
         parsed_request=old_parsed # 이전 턴의 상태
     )
     
-    with patch("src.agents.text_to_sql.nodes.structured_llm_fast", _mock_structured_llm(mock_response)):
+    with patch("src.agents.text_to_sql.nodes.parse_request_llm", _mock_structured_llm(mock_response)):
         result = await parse_request(state)
         parsed = result["parsed_request"]
         
@@ -75,8 +82,7 @@ async def test_time_inheritance_normal():
     """시간 언급이 없을 때 이전 시간을 상속하는지 테스트."""
     
     # Mock LLM Response (No time_range)
-    mock_response = MagicMock()
-    mock_response.content = '{"intent": "sql"}' # time_range 비어있음
+    mock_response = ParsedRequestModel(intent="sql")  # time_range 비어있음
     
     # Previous State
     old_parsed = {"time_range": {"start": "2025-01-01", "end": "2025-01-31"}}
@@ -85,7 +91,7 @@ async def test_time_inheritance_normal():
         parsed_request=old_parsed
     )
     
-    with patch("src.agents.text_to_sql.nodes.structured_llm_fast", _mock_structured_llm(mock_response)):
+    with patch("src.agents.text_to_sql.nodes.parse_request_llm", _mock_structured_llm(mock_response)):
         result = await parse_request(state)
         parsed = result["parsed_request"]
         
@@ -149,18 +155,17 @@ async def test_normalize_result_sets_string_verdict():
 @pytest.mark.asyncio
 async def test_check_clarification_emits_question():
     """정보 부족 판단 시 clarification 질문을 반환하는지 테스트."""
-    mock_response = MagicMock()
-    mock_response.content = '{"needs_clarification": true, "question": "어떤 기간을 조회할까요?"}'
-
-    fake_llm = MagicMock()
-    fake_llm.ainvoke = AsyncMock(return_value=mock_response)
+    mock_response = ClarificationCheck(
+        needs_clarification=True,
+        question="어떤 기간을 조회할까요?",
+    )
 
     state = TextToSQLState(
         user_question="CPU 알려줘",
         parsed_request={"intent": "cpu", "metric": "cpu", "condition": ""},
     )
 
-    with patch("src.agents.text_to_sql.nodes.structured_llm_fast", fake_llm):
+    with patch("src.agents.text_to_sql.nodes.clarification_check_llm", _mock_structured_llm(mock_response)):
         result = await check_clarification(state)
 
     assert result["needs_clarification"] is True
@@ -170,10 +175,8 @@ async def test_check_clarification_emits_question():
 @pytest.mark.asyncio
 async def test_generate_sql_updates_table_expand_count():
     """테이블 확장 시 table_expand_count가 증가하는지 테스트."""
-    mock_resp_expand = MagicMock()
-    mock_resp_expand.content = '{"needs_more_tables": true, "sql": ""}'
-    mock_resp_final = MagicMock()
-    mock_resp_final.content = '{"needs_more_tables": false, "sql": "SELECT 1"}'
+    mock_resp_expand = GenerateSqlResult(needs_more_tables=True, sql="")
+    mock_resp_final = GenerateSqlResult(needs_more_tables=False, sql="SELECT 1")
 
     fake_llm = MagicMock()
     fake_llm.ainvoke = AsyncMock(side_effect=[mock_resp_expand, mock_resp_final])
@@ -195,7 +198,7 @@ async def test_generate_sql_updates_table_expand_count():
         user_constraints="",
     )
 
-    with patch("src.agents.text_to_sql.nodes.llm_smart", fake_llm):
+    with patch("src.agents.text_to_sql.nodes.generate_sql_llm", fake_llm):
         with patch(
             "src.agents.text_to_sql.nodes.expand_tables_tool",
             return_value=(["ops.cpu", "ops.mem"], "테이블: ops.cpu\\n테이블: ops.mem", 2),
@@ -208,15 +211,39 @@ async def test_generate_sql_updates_table_expand_count():
 
 
 @pytest.mark.asyncio
-async def test_validate_llm_updates_validation_retry_count():
-    """검증 실패 시 validation_retry_count가 증가하는지 테스트."""
-    mock_response = MagicMock()
-    mock_response.content = (
-        '{"verdict":"SQL_BAD","feedback_to_sql":"조건 누락","correction_hint":"WHERE ...","unnecessary_tables":[]}'
+async def test_generate_sql_structured_output_error_no_raw_fallback():
+    """구조화 출력 실패 시 raw 폴백 없이 실패를 반환하는지 테스트."""
+    fake_llm = MagicMock()
+    fake_llm.ainvoke = AsyncMock(side_effect=RuntimeError("schema mismatch"))
+
+    state = TextToSQLState(
+        parsed_request={"intent": "test", "time_range": {"all_time": True}},
+        selected_tables=["ops.cpu"],
+        table_context="테이블: ops.cpu",
+        failed_queries=[],
+        validation_reason="",
+        user_constraints="",
     )
 
-    fake_llm = MagicMock()
-    fake_llm.ainvoke = AsyncMock(return_value=mock_response)
+    with patch("src.agents.text_to_sql.nodes.generate_sql_llm", fake_llm):
+        result = await generate_sql(state)
+
+    assert result["generated_sql"] == ""
+    assert "구조화 SQL 생성 실패" in result["sql_guard_error"]
+    assert result["last_tool_usage"] == "SQL 생성 실패: 구조화 출력 오류"
+
+
+@pytest.mark.asyncio
+async def test_validate_llm_updates_validation_retry_count():
+    """검증 실패 시 validation_retry_count가 증가하는지 테스트."""
+    mock_response = ValidationResult(
+        verdict=ValidationVerdict.SQL_BAD,
+        reason="조건 누락",
+        hint="WHERE ...",
+        unnecessary_tables=[],
+    )
+
+    fake_llm = _mock_structured_llm(mock_response)
 
     state = TextToSQLState(
         sql_error=None,
@@ -232,7 +259,7 @@ async def test_validate_llm_updates_validation_retry_count():
         failed_queries=[],
     )
 
-    with patch("src.agents.text_to_sql.nodes.llm_smart", fake_llm):
+    with patch("src.agents.text_to_sql.nodes.validate_result_llm", fake_llm):
         result = await validate_llm(state)
 
     assert result["verdict"] == "SQL_BAD"

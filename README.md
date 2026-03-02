@@ -22,12 +22,13 @@
 
 ### 3. 🧠 지능형 질의 구조화 및 미들웨어 검증 (LLM & Middleware)
 사용자의 투박한 질문을 에이전트가 분석하기 최적화된 정교한 구조로 변환하고, 미들웨어를 통해 데이터의 신뢰성을 보장합니다.
-- **LLM JSON Mode**: 사용자 질문을 즉시 분석하여 의도(Intent)와 파라미터가 분리된 정밀한 JSON 구조로 변환합니다. 이는 에이전트가 모호함 없이 쿼리를 생성할 수 있는 토대가 됩니다.
+- **LLM Structured Outputs (`with_structured_output`)**: 사용자 질문을 Pydantic 스키마로 즉시 구조화하여 의도(Intent)와 파라미터를 안정적으로 분리합니다. 수동 `json.loads` 파싱을 제거해 파싱 오류 가능성을 크게 줄였습니다.
 - **`ParsedRequestGuard` 미들웨어 검증 및 교정**:
     - **시간 범위 기본값 미적용**: 사용자가 시간을 명시하지 않으면 시간 조건을 추가하지 않습니다(전체 기간 기준).
     - **미래 시점 Auto-Clipping**: "오늘 데이터 보여줘"와 같은 요청 시 LLM이 시간 범위를 00:00~24:00로 설정하더라도, 미들웨어가 현재 시각을 확인하여 **24:00인 종료 시간(End Time)을 현재 시각으로 즉시 교정**합니다.
     - **후속 질문 상속 플래그**: 참조 표현을 감지하면 `inherit` 모드로 표시하고, 이전 쿼리의 시간 조건/필터를 유지하도록 유도합니다.
     - **에이전트 친화적 구조 확립**: 구조화된 질문이 물리적/논리적으로 유효한지 미들웨어 단계에서 한 번 더 검증하고 보정함으로써, 에이전트가 환각(Hallucination) 없이 정확한 SQL을 생성하도록 유도합니다.
+    - **구조화 출력 실패 즉시 감지**: SQL 생성 단계의 임시 raw fallback 경로를 제거하여, 구조화 출력 오류를 즉시 실패 상태로 노출하고 문제를 빠르게 추적할 수 있습니다.
 
 ### 4. 🔗 스키마 자동 인식 및 고급 RAG (Table Discovery)
 에이전트가 여러 테이블 중 정답을 찾기 위해 벡터 DB와 실시간 스키마 정보를 결합합니다.
@@ -156,18 +157,18 @@ graph TD
 
 | 단계 | 노드명 (Node) | 역할 및 상세 설명 | 사용 도구 / 기술 |
 | :--- | :--- | :--- | :--- |
-| **0** | **`classify_intent`** | 질문을 `sql` / `general`로 분류하여 그래프 분기를 결정합니다. | `ChatOpenAI` (JSON Mode) |
+| **0** | **`classify_intent`** | 질문을 `sql` / `general`로 분류하여 그래프 분기를 결정합니다. | `ChatOpenAI` + `with_structured_output(IntentClassification)` |
 | **1** | **`general_chat`** | `general` 분기에서 일반 대화 응답을 생성하고 종료합니다. | `ChatOpenAI` |
-| **2** | **`parse_request`** | 사용자 자연어를 분석하여 **의도/지표/시간 범위**를 구조화합니다. | `ChatOpenAI` (JSON Mode) |
+| **2** | **`parse_request`** | 사용자 자연어를 분석하여 **의도/지표/시간 범위**를 구조화합니다. | `ChatOpenAI` + `with_structured_output(ParsedRequestModel)` |
 | **3** | **`validate_request`** | 파싱 결과의 보안성과 논리 타당성을 검증/보정합니다. | `ParsedRequestGuard` |
-| **4** | **`check_clarification`** | 정보가 부족하면 역질문(HITL)로 분기합니다. | `ChatOpenAI` (JSON Mode) |
+| **4** | **`check_clarification`** | 정보가 부족하면 역질문(HITL)로 분기합니다. | `ChatOpenAI` + `with_structured_output(ClarificationCheck)` |
 | **5** | **`retrieve_tables`** | 질의와 연관된 테이블 후보를 검색합니다. | **Tool**: `search_tables` (Qdrant) |
-| **6** | **`select_tables`** | 후보를 리랭크해 실제 SQL 컨텍스트 테이블을 확정합니다. | `LLM Rerank` |
-| **7** | **`generate_sql`** | SQL을 생성하고 필요 시 테이블 컨텍스트를 확장합니다. | **Tool**: `expand_tables` (Internal Cache) |
+| **6** | **`select_tables`** | 후보를 리랭크해 실제 SQL 컨텍스트 테이블을 확정합니다. | `LLM Rerank` + `with_structured_output(TableRerankResult)` |
+| **7** | **`generate_sql`** | SQL을 생성하고 필요 시 테이블 컨텍스트를 확장합니다. | `with_structured_output(GenerateSqlResult)` + **Tool**: `expand_tables` (Internal Cache) |
 | **8** | **`guard_sql`** | 생성 SQL의 안전성과 문법을 사전 차단합니다. | `SqlOutputGuard` |
 | **9** | **`execute_sql`** | 검증된 SQL을 DB에서 실행합니다. | **Tool**: `execute_sql` (Postgres) |
 | **10** | **`normalize_result`** | 실행 결과/에러를 정규화하고 재시도 분류 정보를 만듭니다. | `Result Normalizer` |
-| **11** | **`validate_llm`** | 결과 적합성을 검증하고 필요 시 SQL 재생성을 트리거합니다. | `Reflection / Self-Healing` |
+| **11** | **`validate_llm`** | 결과 적합성을 검증하고 필요 시 SQL 재생성을 트리거합니다. | `with_structured_output(ValidationResult)` / `Reflection` |
 | **12** | **`generate_report`** | 최종 사용자 응답(리포트)을 생성합니다. | `Markdown Report Gen` |
 
 ### 🧠 핵심 기술: 지능형 테이블 캐싱 및 확장
@@ -198,6 +199,7 @@ server-agent/
 │   │   │   ├── graph.py     # 에이전트 상태 전이 및 그래프 구조 정의
 │   │   │   ├── nodes.py     # 분석, 검색, 생성, 검증 노드 단일 모듈
 │   │   │   ├── prompts.py   # 단계별 시스템/사용자 프롬프트 관리
+│   │   │   ├── schemas.py   # Structured Output(Pydantic) 스키마 정의
 │   │   │   ├── state.py     # 에이전트 실행 상태(State) 스키마 정의
 │   │   │   ├── table_expand_too.py # 캐시 기반 테이블 정보 확장 도구
 │   │   │   └── middleware/  # 입력/출력 및 요청 검증 가드

@@ -20,9 +20,16 @@ from ..prompts import (
 )
 from .utils import (
     get_current_time,
-    parse_json_from_llm,
     rebuild_context_from_candidates,
     apply_elbow_cut,
+)
+from ..schemas import (
+    ClarificationCheck,
+    GenerateSqlResult,
+    IntentClassification,
+    ParsedRequestModel,
+    TableRerankResult,
+    ValidationResult,
 )
 
 logger = logging.getLogger("TEXT_TO_SQL")
@@ -42,8 +49,13 @@ llm_smart = ChatOpenAI(
     api_key=settings.openai_api_key,
 )
 
-# JSON Mode 강제 바인딩
-structured_llm_fast = llm_fast.bind(response_format={"type": "json_object"})
+# Structured Output 바인딩
+intent_classifier_llm = llm_fast.with_structured_output(IntentClassification)
+parse_request_llm = llm_fast.with_structured_output(ParsedRequestModel)
+clarification_check_llm = llm_fast.with_structured_output(ClarificationCheck)
+table_rerank_llm = llm_smart.with_structured_output(TableRerankResult)
+generate_sql_llm = llm_smart.with_structured_output(GenerateSqlResult)
+validate_result_llm = llm_smart.with_structured_output(ValidationResult)
 
 
 # ─────────────────────────────────────────
@@ -96,8 +108,8 @@ def _format_candidates_for_rerank(candidates: list, top_col_limit: int = 5) -> s
     return "\n\n".join(lines)
 
 
-async def _call_rerank_llm(parsed: dict, candidates_str: str) -> list | None:
-    """LLM을 호출하여 테이블 리랭킹 수행 (JSON 응답)."""
+async def _call_rerank_llm(parsed: dict, candidates_str: str) -> TableRerankResult | None:
+    """LLM을 호출하여 테이블 리랭킹 수행."""
     messages = [
         SystemMessage(content=RERANK_TABLE_SYSTEM),
         HumanMessage(
@@ -110,30 +122,26 @@ async def _call_rerank_llm(parsed: dict, candidates_str: str) -> list | None:
             )
         ),
     ]
-    response = await llm_smart.ainvoke(messages)
-    parsed_json, error = parse_json_from_llm(response.content)
-    if error:
-        logger.error("TEXT_TO_SQL:select_tables rerank_json_error=%s", error)
+    try:
+        return await table_rerank_llm.ainvoke(messages)
+    except Exception as exc:
+        logger.error("TEXT_TO_SQL:select_tables rerank_structured_error=%s", exc)
         return None
-    return parsed_json
 
 
-def _parse_rerank_response(response_json: list, candidates_len: int) -> list[int] | None:
+def _parse_rerank_response(
+    response_model: TableRerankResult | None, candidates_len: int
+) -> list[int] | None:
     """리랭킹 LLM 응답 파싱 및 Elbow Cut 적용."""
-    if not isinstance(response_json, list):
+    if response_model is None:
         return None
 
     scored = []
-    for item in response_json:
-        if not isinstance(item, dict):
-            continue
-        try:
-            idx = int(item.get("index"))
-            score = float(item.get("score"))
-            if 1 <= idx <= candidates_len:
-                scored.append({"index": idx, "score": score})
-        except (ValueError, TypeError):
-            continue
+    for item in response_model.items:
+        idx = int(item.index)
+        score = float(item.score)
+        if 1 <= idx <= candidates_len:
+            scored.append({"index": idx, "score": score})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     final_scored = apply_elbow_cut(scored)

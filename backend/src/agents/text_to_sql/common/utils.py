@@ -1,5 +1,4 @@
 """Text-to-SQL 에이전트 유틸리티 함수"""
-import json
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -15,17 +14,6 @@ def get_current_time() -> str:
 def get_now() -> datetime:
     """현재 시간을 datetime 객체로 반환 (타임존 포함)"""
     return datetime.now(ZoneInfo(TIMEZONE))
-
-
-def parse_json_from_llm(text: str) -> tuple[dict | None, str | None]:
-    """LLM 응답에서 JSON 블록을 안전하게 추출하고 파싱"""
-    try:
-        match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-        if match:
-            text = match.group(1)
-        return json.loads(text.strip()), None
-    except json.JSONDecodeError as e:
-        return None, f"JSON 파싱 실패: {e}. 원본: {text[:100]}..."
 
 
 def normalize_sql(sql: str) -> str:

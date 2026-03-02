@@ -9,7 +9,8 @@ from langchain_core.messages import BaseMessage
 class ParsedRequest(TypedDict, total=False):
     """구조화된 요구사항"""
     intent: str
-    time_range: dict  # {"start": str, "end": str, "timezone": str}
+    is_followup: bool
+    time_range: dict  # {"start": str, "end": str, "timezone": str, "all_time": bool, "inherit": bool}
     metric: Optional[str]
     condition: Optional[str]
     output: Optional[str]
@@ -88,7 +89,6 @@ class TextToSQLState(TypedDict, total=False):
     result_status: str
     verdict: Verdict
     validation_reason: str
-    feedback_to_sql: str
     last_tool_usage: Optional[str]
 
     # 확장 상태

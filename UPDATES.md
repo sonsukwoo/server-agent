@@ -1,3 +1,85 @@
+# 🆕 v2.1 업데이트: LangChain Structured Outputs 전환 (2026-03-02)
+
+이번 업데이트는 OpenAI JSON 모드 + 수동 파싱(`json.loads`) 기반 흐름을 제거하고,  
+**LangChain `with_structured_output(Pydantic)`** 중심으로 전환한 리팩토링입니다.
+
+---
+
+## ✅ 1. 구조화 출력 전환
+
+### 🔹 스키마 중심 아키텍처 도입
+- `src/agents/text_to_sql/schemas.py` 신설
+- 주요 모델 정의:
+  - `IntentClassification`
+  - `ClarificationCheck`
+  - `ParsedRequestModel`
+  - `TableRerankResult` (`items` 래퍼 구조)
+  - `GenerateSqlResult`
+  - `ValidationResult` / `ValidationVerdict`
+
+### 🔹 LLM 바인딩 방식 변경
+- Before: `llm.bind(response_format={"type":"json_object"})` + 문자열 파싱
+- After: `llm.with_structured_output(PydanticModel)` + 모델 인스턴스 직접 수신
+
+적용 노드:
+- `classify_intent`
+- `parse_request`
+- `check_clarification`
+- `select_tables`
+- `generate_sql`
+- `validate_llm`
+
+---
+
+## 🛡️ 2. 안정성 개선
+
+### 🔹 OpenAI 400 스키마 오류 해결
+다음 오류 대응:
+- `Invalid schema ... 'additionalProperties' is required to be supplied and to be false`
+
+조치:
+- Structured Output 스키마 공통 베이스(`StructuredModel`) 도입
+- 모든 모델에 `extra="forbid"` 적용
+- 결과적으로 루트/중첩 모델 모두 `additionalProperties: false` 보장
+
+### 🔹 임시 raw fallback 제거
+- `generate_sql`의 구조화 출력 실패 시 raw 재호출/수동 SQL 추출 경로 삭제
+- 이제 구조화 출력 실패는 명시적 실패 상태로 반환되어 문제를 즉시 탐지 가능
+
+---
+
+## 🧹 3. 코드 정리 (Clean Code)
+
+- 미사용 파싱 유틸 `parse_json_from_llm` 제거
+- 프롬프트 내 불필요한 “JSON만 출력” 강제 문구 정리
+- 검증 필드명 정합성 통일 (`reason`, `hint`)
+- `state.py` 타입 정리 (`is_followup` 반영, 미사용 `feedback_to_sql` 제거)
+
+---
+
+## 🧪 4. 테스트 및 검증
+
+- 테스트 목킹을 문자열 응답 기반에서 **Pydantic 모델 인스턴스 기반**으로 전환
+- 신규 테스트 추가:
+  - 구조화 출력 실패 시 `generate_sql`이 raw fallback 없이 실패 반환하는지 검증
+- 실행 결과:
+  - `16 passed`
+
+테스트 실행 예시:
+```bash
+DB_USER=test DB_PASSWORD=test OPENAI_API_KEY=test \
+backend/.venv/bin/python -m pytest backend/src/tests/test_nodes.py backend/src/tests/test_routing.py backend/src/tests/test_query_api.py -q .
+```
+
+---
+
+## 📦 5. 운영 메모
+
+- 이번 변경으로 `backend/requirements.txt`, `backend/Dockerfile` 수정은 필수 아님
+- Docker 사용 시 호스트 전역 Python 환경과 무관하게 컨테이너 환경 기준으로 동작
+
+---
+
 # 🚀 v2.0 대규모 업데이트: LangGraph 기반 능동형 에이전트 전환
 
 이번 업데이트는 기존의 수동적인 SQL 생성기를 넘어, **LangGraph(랭그래프)** 라이브러리의 강력한 상태 관리 기능을 100% 활용하여 **기억력과 판단력을 갖춘 지능형 에이전트**로 진화시키는 것에 초점을 맞추었습니다.
